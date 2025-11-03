@@ -4,8 +4,8 @@ from pathlib import Path
 from tybuild.dependencies import get_cpp_dependencies
 from tybuild.projects import discover_projects
 from tybuild.vs_templates import generate_project_guid, generate_solution, generate_project_from_template
+from tybuild.build import generate_build_files
 
-# from tybuild.build import RunBuild
 # from tybuild.clean import Clean
 
 
@@ -54,6 +54,22 @@ def cmd_list(args):
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def cmd_generate(args):
+    """Generate Visual Studio project and solution files."""
+    try:
+        base_path = Path(args.root).resolve() if args.root else None
+        generate_build_files(base_path)
+
+    except (RuntimeError, FileNotFoundError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        sys.exit(2)
 
 
 def cmd_test_sln(args):
@@ -169,6 +185,12 @@ def main():
     parser_list.add_argument('--root', default=None,
                            help='Root directory to search from (default: current directory)')
     parser_list.set_defaults(func=cmd_list)
+
+    # Generate command
+    parser_generate = subparsers.add_parser('generate', help='Generate Visual Studio project and solution files')
+    parser_generate.add_argument('--root', default=None,
+                                help='Root directory (default: current directory)')
+    parser_generate.set_defaults(func=cmd_generate)
 
     # Test solution generation command
     parser_test_sln = subparsers.add_parser('test-sln', help='Test solution generation')
