@@ -47,14 +47,6 @@ def _file_changed(path: Path, cached_identity: Dict[str, int]) -> bool:
             current["mtime_ns"] != cached_identity.get("mtime_ns"))
 
 
-def _files_dict_changed(base_path: Path, files_dict: Dict[str, Dict[str, int]]) -> bool:
-    """Check if any file in the dict has changed."""
-    for rel_path, identity in files_dict.items():
-        if _file_changed(base_path / rel_path, identity):
-            return True
-    return False
-
-
 def _load_build_cache(cache_path: Path) -> Dict[str, Any]:
     """Load build cache from .tybuild file."""
     if not cache_path.exists():
@@ -201,9 +193,8 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
         # Generate deterministic GUID for this project
         project_guid = generate_project_guid(project.type, project.name)
 
-        # Get dependencies for the main cpp file (cpp only for project, cpp+h for cache)
+        # Get dependencies for the main cpp file
         cpp_deps = get_cpp_dependencies(src_root, project.cpp_file, include_headers=False)
-        all_deps = get_cpp_dependencies(src_root, project.cpp_file, include_headers=True)
 
         # Build sources list: main cpp + cpp dependencies
         main_cpp_rel = project.cpp_file.relative_to(src_root).as_posix()
@@ -233,29 +224,19 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
             needs_regen = True
             reason = "new project"
         elif not needs_regen:
-            # Check template file
+            # Check template file (size and mtime)
             template_identity = cached_project.get("template_identity", {})
             if _file_changed(template_vcxproj, template_identity):
                 needs_regen = True
                 reason = "template changed"
 
         if not needs_regen and cached_project:
-            # Check source files (main cpp + cpp deps)
-            cached_sources = cached_project.get("sources", {})
-            current_sources = {s: _get_file_identity(src_root / s) for s in sources}
+            # Check if set of source files changed
+            cached_sources = set(cached_project.get("sources", []))
+            current_sources = set(sources)
             if current_sources != cached_sources:
                 needs_regen = True
-                reason = "source files changed"
-
-        if not needs_regen and cached_project:
-            # Check header files
-            cached_headers = cached_project.get("headers", {})
-            # Get current headers (all_deps - cpp_deps - main cpp)
-            header_files = [f for f in all_deps if f.endswith(".h")]
-            current_headers = {h: _get_file_identity(src_root / h) for h in header_files}
-            if current_headers != cached_headers:
-                needs_regen = True
-                reason = "header files changed"
+                reason = "source file set changed"
 
         if needs_regen:
             print(f"  Regenerating ({reason})")
@@ -278,13 +259,11 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
             print(f"  Up to date (skipping)")
 
         # Update cache for this project
-        header_files = [f for f in all_deps if f.endswith(".h")]
         new_cache["projects"].append({
             "name": project.name,
             "type": project.type,
             "template_identity": _get_file_identity(template_vcxproj),
-            "sources": {s: _get_file_identity(src_root / s) for s in sources},
-            "headers": {h: _get_file_identity(src_root / h) for h in header_files},
+            "sources": sources,  # Just the list of source file paths
         })
 
         projects_to_add.append((project.name, project_guid))
