@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 from tybuild.dependencies import get_cpp_dependencies
 from tybuild.projects import discover_projects
+from tybuild.vs_templates import generate_project_guid, generate_solution
 
 # from tybuild.build import RunBuild
 # from tybuild.clean import Clean
@@ -55,6 +56,62 @@ def cmd_list(args):
         sys.exit(1)
 
 
+def cmd_test_sln(args):
+    """Test solution generation from template."""
+    try:
+
+        # Paths relative to current working directory
+        output_sln_path = Path('./build_template/Test.sln').resolve()
+
+        # Discover projects
+        projects = discover_projects()
+        if not projects:
+            print("No projects found in ./src/project", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"Discovered {len(projects)} project(s):")
+        for project in projects:
+            print(f"  {project.type}/{project.name}")
+        print()
+
+        # Build list of projects to add
+        projects_to_add = []
+        for project in projects:
+            # Generate deterministic GUID
+            guid = generate_project_guid(project.type, project.name)
+
+            # Project name (use as-is)
+            project_name = project.name
+
+            # Relative path to vcxproj (same directory as solution)
+            vcxproj_rel_path = f"{project_name}.vcxproj"
+
+            projects_to_add.append((project_name, guid, vcxproj_rel_path, project.type))
+            print(f"Will add: {project_name} ({project.type}) - GUID: {guid}")
+
+        print()
+        print(f"Output: {output_sln_path}")
+
+        generate_solution(
+            output_sln_path,
+            'C0159493-A465-32B1-8E61-5EB18BF6BD74',
+            '5C330799-6FA6-33C3-B12C-755A9CA12672',
+            '46BE4EB3-B0FD-3982-8000-AE0905052172',
+            [
+                ('Server', '954D3659-7E49-38DA-AAF3-DE9306D58F9B'),
+                ('Client', '19EF89DE-8F64-33EA-8F28-40499A66EA07'),
+            ]
+        )
+    
+        print(f"Solution generated successfully: {output_sln_path}")
+
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='tybuild',
@@ -81,6 +138,10 @@ def main():
     parser_list.add_argument('--root', default=None,
                            help='Root directory to search from (default: current directory)')
     parser_list.set_defaults(func=cmd_list)
+
+    # Test solution generation command
+    parser_test_sln = subparsers.add_parser('test-sln', help='Test solution generation from template')
+    parser_test_sln.set_defaults(func=cmd_test_sln)
 
     args = parser.parse_args()
 
