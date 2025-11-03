@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 from tybuild.dependencies import get_cpp_dependencies
 from tybuild.projects import discover_projects
-from tybuild.vs_templates import generate_project_guid, generate_solution
+from tybuild.vs_templates import generate_project_guid, generate_solution, generate_project_from_template
 
 # from tybuild.build import RunBuild
 # from tybuild.clean import Clean
@@ -57,7 +57,7 @@ def cmd_list(args):
 
 
 def cmd_test_sln(args):
-    """Test solution generation from template."""
+    """Test solution generation."""
     try:
 
         # Paths relative to current working directory
@@ -111,6 +111,37 @@ def cmd_test_sln(args):
         traceback.print_exc()
         sys.exit(1)
 
+def cmd_test_prj(args):
+    """Test project generation from template."""
+    try:
+
+        # Paths relative to current working directory
+        template_path = Path('./build_template/').resolve()
+        output_path = Path('./build_template/').resolve()
+
+        src_root = Path('./src/').resolve()
+        start_file = Path('./src/project/sdl3/Client.cpp').resolve()
+
+        deps = get_cpp_dependencies(src_root, start_file)
+
+        generate_project_from_template(
+            template_path,
+            'ZZZZZZZZ_sdl3',
+            'Client2',
+            '19EF89DE-8F64-33EA-8F28-40499A66EA07',
+            src_root,
+            deps,
+            output_path
+        )
+
+        print(f"Project files generated successfully")
+
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -140,8 +171,12 @@ def main():
     parser_list.set_defaults(func=cmd_list)
 
     # Test solution generation command
-    parser_test_sln = subparsers.add_parser('test-sln', help='Test solution generation from template')
+    parser_test_sln = subparsers.add_parser('test-sln', help='Test solution generation')
     parser_test_sln.set_defaults(func=cmd_test_sln)
+
+    # Test project generation command
+    parser_test_prj = subparsers.add_parser('test-prj', help='Test project generation from template')
+    parser_test_prj.set_defaults(func=cmd_test_prj)
 
     args = parser.parse_args()
 

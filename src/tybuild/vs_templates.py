@@ -8,17 +8,16 @@ including deterministic GUID generation for projects.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import uuid
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-
-GUID_SALT = "tybuild"
 VC_PROJECT_TYPE_GUID = "{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}"
 
-
-def generate_project_guid(project_type: str, project_name: str, salt: Optional[str] = None) -> str:
+def generate_project_guid(project_type: str, project_name: str) -> str:
     """
     Generate a deterministic GUID for a Visual Studio project.
 
@@ -29,18 +28,16 @@ def generate_project_guid(project_type: str, project_name: str, salt: Optional[s
     Args:
         project_type: The type of the project (e.g., 'console', 'gui', 'library')
         project_name: The name of the project (e.g., 'Server', 'Client')
-        salt: Optional salt string (defaults to GUID_SALT constant)
 
     Returns:
         A GUID string in the format "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}"
-        (uppercase, with braces)
+        (uppercase, without braces)
 
     Example:
         >>> generate_project_guid('console', 'Server')
-        '{12345678-1234-5678-1234-567812345678}'  # deterministic result
+        '12345678-1234-5678-1234-567812345678'  # deterministic result
     """
-    if salt is None:
-        salt = GUID_SALT
+    salt = "tybuild"
 
     # Combine salt, project type, and project name
     seed = f"{salt}:{project_type}:{project_name}"
@@ -63,7 +60,7 @@ def generate_project_guid(project_type: str, project_name: str, salt: Optional[s
     generated_uuid = uuid.UUID(bytes=bytes(guid_bytes))
 
     # Format as uppercase with braces
-    return "{" + str(generated_uuid).upper() + "}"
+    return str(generated_uuid).upper()
 
 
 # ---------------------- Solution file utilities ----------------------
@@ -95,10 +92,9 @@ def generate_solution(
             ]
         )
     """
-    # Ensure GUIDs are in uppercase and have braces
-    solution_guid = format_guid(solution_guid)
-    all_build_guid = format_guid(all_build_guid)
-    zero_check_guid = format_guid(zero_check_guid)
+    solution_guid = "{" + solution_guid + "}"
+    all_build_guid = "{" + all_build_guid + "}"
+    zero_check_guid = "{" + zero_check_guid + "}"
 
     # Configuration platforms
     configurations = ["Debug|x64", "Release|x64", "MinSizeRel|x64", "RelWithDebInfo|x64"]
@@ -116,7 +112,7 @@ def generate_solution(
     lines.append("\tProjectSection(ProjectDependencies) = postProject")
     # ALL_BUILD depends on all user projects and ZERO_CHECK
     for project_name, project_guid in projects_to_add:
-        formatted_guid = format_guid(project_guid)
+        formatted_guid = '{' + project_guid + '}'
         lines.append(f"\t\t{formatted_guid} = {formatted_guid}")
     lines.append(f"\t\t{zero_check_guid} = {zero_check_guid}")
     lines.append("\tEndProjectSection")
@@ -124,7 +120,7 @@ def generate_solution(
 
     # User projects (each depends on ZERO_CHECK)
     for project_name, project_guid in projects_to_add:
-        formatted_guid = format_guid(project_guid)
+        formatted_guid = '{' + project_guid + '}'
         lines.append(f'Project("{VC_PROJECT_TYPE_GUID}") = "{project_name}", "{project_name}.vcxproj", "{formatted_guid}"')
         lines.append("\tProjectSection(ProjectDependencies) = postProject")
         lines.append(f"\t\t{zero_check_guid} = {zero_check_guid}")
@@ -156,7 +152,7 @@ def generate_solution(
 
     # User projects: ActiveCfg and Build.0
     for project_name, project_guid in projects_to_add:
-        formatted_guid = format_guid(project_guid)
+        formatted_guid = '{' + project_guid + '}'
         for config in configurations:
             config_name = config.split('|')[0]
             lines.append(f"\t\t{formatted_guid}.{config}.ActiveCfg = {config}")
@@ -184,18 +180,236 @@ def generate_solution(
     content = "\n".join(lines)
     output_sln_path.write_text(content, encoding='utf-8-sig')
 
+# ---------------------- Project file utilities ----------------------
 
-def format_guid(guid: str) -> str:
+def _detect_ns(root) -> str:
+    """Detect the XML namespace from the root element."""
+    if root.tag.startswith("{") and "}" in root.tag:
+        return root.tag[1:].split("}")[0]
+    return "http://schemas.microsoft.com/developer/msbuild/2003"
+
+
+def _ns_tag(ns: str, tag: str) -> str:
+    """Create a namespaced XML tag."""
+    return f"{{{ns}}}{tag}"
+
+
+def _backslash(path: str) -> str:
+    """Convert path to Windows backslash format."""
+    return path.replace("/", "\\").replace(os.sep, "\\")
+
+
+def _replace_guid_in_vcxproj(xml_text: str, new_guid: str) -> str:
     """
-    Format a GUID string to ensure it's uppercase and has braces.
+    Replace the ProjectGuid in a vcxproj XML file.
 
     Args:
-        guid: GUID string (with or without braces)
+        xml_text: The vcxproj file content as XML string
+        new_guid: New GUID without braces
 
     Returns:
-        GUID string in format "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}"
+        Updated XML text with new GUID
     """
-    # Remove braces if present
-    guid_clean = guid.strip().strip('{}')
-    # Add braces and convert to uppercase
-    return "{" + guid_clean.upper() + "}"
+    root = ET.fromstring(xml_text)
+    ns = _detect_ns(root)
+    ET.register_namespace("", ns)
+
+    # Find or create Globals PropertyGroup
+    globals_pg = None
+    for pg in root.findall(_ns_tag(ns, "PropertyGroup")):
+        if pg.get("Label") == "Globals":
+            globals_pg = pg
+            break
+    if globals_pg is None:
+        globals_pg = ET.SubElement(root, _ns_tag(ns, "PropertyGroup"), {"Label": "Globals"})
+
+    # Find or create ProjectGuid element
+    guid_el = globals_pg.find(_ns_tag(ns, "ProjectGuid"))
+    if guid_el is None:
+        guid_el = ET.SubElement(globals_pg, _ns_tag(ns, "ProjectGuid"))
+
+    # Set GUID with braces for XML format
+    guid_el.text = "{" + new_guid + "}"
+
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
+
+
+def _replace_sources_in_vcxproj(xml_text: str, sources: List[str]) -> str:
+    """
+    Replace all ClCompile (source file) entries in a vcxproj file.
+
+    Args:
+        xml_text: The vcxproj file content as XML string
+        sources: List of source file paths to include
+
+    Returns:
+        Updated XML text with new sources
+    """
+    root = ET.fromstring(xml_text)
+    ns = _detect_ns(root)
+    ET.register_namespace("", ns)
+
+    # Remove all existing ClCompile elements
+    for ig in root.findall(_ns_tag(ns, "ItemGroup")):
+        for cc in list(ig.findall(_ns_tag(ns, "ClCompile"))):
+            ig.remove(cc)
+
+    # Add new sources if any
+    if sources:
+        ig = ET.SubElement(root, _ns_tag(ns, "ItemGroup"))
+        for s in sources:
+            ET.SubElement(ig, _ns_tag(ns, "ClCompile"), {"Include": _backslash(s)})
+
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
+
+
+def _replace_sources_in_filters(xml_text: str, sources: List[str]) -> str:
+    """
+    Replace all ClCompile (source file) entries in a vcxproj.filters file.
+
+    Args:
+        xml_text: The .filters file content as XML string
+        sources: List of source file paths to include
+
+    Returns:
+        Updated XML text with new sources
+    """
+    root = ET.fromstring(xml_text)
+    ns = _detect_ns(root)
+    ET.register_namespace("", ns)
+
+    # Remove all existing ClCompile elements
+    for ig in root.findall(_ns_tag(ns, "ItemGroup")):
+        for cc in list(ig.findall(_ns_tag(ns, "ClCompile"))):
+            ig.remove(cc)
+
+    # Ensure "Source Files" filter exists
+    def ensure_source_filter():
+        for ig in root.findall(_ns_tag(ns, "ItemGroup")):
+            for flt in ig.findall(_ns_tag(ns, "Filter")):
+                if flt.get("Include") == "Source Files":
+                    return
+        ig = ET.SubElement(root, _ns_tag(ns, "ItemGroup"))
+        flt = ET.SubElement(ig, _ns_tag(ns, "Filter"), {"Include": "Source Files"})
+        uid = ET.SubElement(flt, _ns_tag(ns, "UniqueIdentifier"))
+        uid.text = "{" + str(uuid.uuid4()).upper() + "}"
+
+    ensure_source_filter()
+
+    # Add new sources if any
+    if sources:
+        ig = ET.SubElement(root, _ns_tag(ns, "ItemGroup"))
+        for s in sources:
+            cc = ET.SubElement(ig, _ns_tag(ns, "ClCompile"), {"Include": _backslash(s)})
+            flt = ET.SubElement(cc, _ns_tag(ns, "Filter"))
+            flt.text = "Source Files"
+
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
+
+
+def _make_relative(paths: List[str], to_dir: Path) -> List[str]:
+    """
+    Make absolute paths relative to a target directory.
+
+    Args:
+        paths: List of absolute paths
+        to_dir: Directory to make paths relative to
+
+    Returns:
+        List of relative paths
+    """
+    out: List[str] = []
+    for p in paths:
+        try:
+            out.append(os.path.relpath(p, start=to_dir))
+        except ValueError:
+            # Different drive on Windows
+            out.append(p)
+    return out
+
+
+def _resolve_from_source_root(source_root: Path, rel_sources: List[str]) -> List[str]:
+    """
+    Resolve relative source paths from a source root directory.
+
+    Args:
+        source_root: Root directory for source files
+        rel_sources: List of paths relative to source_root
+
+    Returns:
+        List of absolute paths
+    """
+    return [str((source_root / s).resolve()) for s in rel_sources]
+
+
+def generate_project_from_template(
+    template_path: Path,
+    template_name: str,
+    project_name: str,
+    project_guid: str,
+    source_root: Path, sources_rel_to_root: List[str],
+    output_path: Path
+) -> None:
+    """
+    Generate a project file from a template by replacing placeholders.
+
+    Args:
+        template_path: Directory containing the template files
+        template_name: Base name of the template file (e.g., 'ZZZZZZ' for 'ZZZZZZ.vcxproj' and 'ZZZZZZ.vcxproj.filters', and also the name the project has set in the project file)
+        project_name: Name of the project to generate (base name for generated files and also the name set in the project file)
+        project_guid: GUID of the project to set in the project file
+        source_root: Path to the root directory containing source files
+        sources_rel_to_root: List of source file paths relative to source_root to include in the project
+        output_path: Path where the generated project should be written
+
+    Example:
+        generate_project_from_template(
+            Path('template_dir/'),
+            'ZZZZZZ',
+            'Client_console',
+            '19EF89DE-8F64-33EA-8F28-40499A66EA07',
+            Path('src/'),
+            [
+                'main.cpp',
+                'utils/helper.cpp',
+            ],
+            Path('build_dir/')
+        )
+    """
+    # Locate template files
+    template_vcxproj = template_path / f"{template_name}.vcxproj"
+    template_filters = template_path / f"{template_name}.vcxproj.filters"
+
+    # Read template files
+    vcx_text = template_vcxproj.read_text(encoding="utf-8", errors="replace")
+    filt_text = None
+    if template_filters.exists():
+        filt_text = template_filters.read_text(encoding="utf-8", errors="replace")
+
+    # Replace template name with project name everywhere (simple string replacement)
+    vcx_text = vcx_text.replace(template_name, project_name)
+    if filt_text is not None:
+        filt_text = filt_text.replace(template_name, project_name)
+
+    # Replace GUID using XML manipulation
+    vcx_text = _replace_guid_in_vcxproj(vcx_text, project_guid)
+
+    # Resolve sources: (sources relative to source_root) → absolute → relative to output_path
+    abs_sources = _resolve_from_source_root(source_root, sources_rel_to_root)
+    rel_sources_for_proj = _make_relative(abs_sources, output_path)
+
+    # Replace sources in vcxproj and filters using XML manipulation
+    vcx_text = _replace_sources_in_vcxproj(vcx_text, rel_sources_for_proj)
+    if filt_text is not None:
+        filt_text = _replace_sources_in_filters(filt_text, rel_sources_for_proj)
+
+    # Create output directory if needed
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Write output files
+    new_vcx = output_path / f"{project_name}.vcxproj"
+    new_vcx.write_text(vcx_text, encoding="utf-8")
+
+    if filt_text is not None:
+        new_filters = output_path / f"{project_name}.vcxproj.filters"
+        new_filters.write_text(filt_text, encoding="utf-8")
