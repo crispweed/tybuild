@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,17 +97,48 @@ def parse_includes(file_path: Path) -> List[str]:
 
 
 def resolve_include(root: Path, includer: Path, include_str: str) -> Path | None:
-    """Resolve an include path relative to the includer file."""
+    """
+    Resolve an include path, checking:
+    1. Relative to the includer file
+    2. Relative to the source root (if not found in step 1)
+    """
+    root_resolved = root.resolve()
+
+    # Try 1: Relative to the includer file
     candidate = (includer.parent / include_str).resolve(strict=False)
     try:
         candidate = candidate.resolve(strict=True)
+        # Check if it's within the root
+        try:
+            candidate.relative_to(root_resolved)
+            return candidate
+        except ValueError:
+            # Outside root, continue to try relative to root
+            pass
     except FileNotFoundError:
-        return None
+        # Not found relative to includer, continue to try relative to root
+        pass
+
+    # Try 2: Relative to the source root
+    candidate = (root / include_str).resolve(strict=False)
     try:
-        candidate.relative_to(root.resolve())
-    except ValueError:
-        return None
-    return candidate
+        candidate = candidate.resolve(strict=True)
+        # Check if it's within the root
+        try:
+            candidate.relative_to(root_resolved)
+            return candidate
+        except ValueError:
+            # Outside root
+            pass
+    except FileNotFoundError:
+        # Not found
+        pass
+
+    # Both attempts failed
+    print(f"Warning: Could not resolve include '{include_str}' from '{includer}' "
+          f"(tried relative to file and relative to root '{root}')",
+          file=sys.stderr)
+    return None
 
 
 def prune_cache_to_existing_files(cache: Cache, root: Path) -> None:
