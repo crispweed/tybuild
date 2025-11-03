@@ -60,7 +60,7 @@ def cmd_generate(args):
     """Generate Visual Studio project and solution files."""
     try:
         base_path = Path(args.root).resolve() if args.root else None
-        generate_build_files(base_path)
+        generate_build_files(base_path, force=args.force)
 
     except (RuntimeError, FileNotFoundError) as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -190,6 +190,8 @@ def main():
     parser_generate = subparsers.add_parser('generate', help='Generate Visual Studio project and solution files')
     parser_generate.add_argument('--root', default=None,
                                 help='Root directory (default: current directory)')
+    parser_generate.add_argument('--force', action='store_true',
+                                help='Force regeneration of all files, ignoring cache')
     parser_generate.set_defaults(func=cmd_generate)
 
     # Test solution generation command

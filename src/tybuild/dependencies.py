@@ -286,7 +286,7 @@ def ensure_file_in_cache(root: Path, cache: Cache, file_path: Path) -> str:
     return rel_path
 
 
-def get_cpp_dependencies(root: Path, start_file: Path, refresh: bool = False) -> List[str]:
+def get_cpp_dependencies(root: Path, start_file: Path, refresh: bool = False, include_headers: bool = False) -> List[str]:
     """
     Get all .cpp file dependencies for a given start file.
 
@@ -298,9 +298,10 @@ def get_cpp_dependencies(root: Path, start_file: Path, refresh: bool = False) ->
         root: Root directory containing the source tree
         start_file: The starting .cpp or .h file (absolute path)
         refresh: If True, rebuild cache from scratch
+        include_headers: If True, also return .h files in dependencies
 
     Returns:
-        Sorted list of relative paths to .cpp dependencies
+        Sorted list of relative paths to .cpp dependencies (and .h if include_headers=True)
     """
     root = root.resolve()
     start_file = start_file.resolve()
@@ -316,11 +317,16 @@ def get_cpp_dependencies(root: Path, start_file: Path, refresh: bool = False) ->
     dep_graph = build_dependency_graph(cache)
     reachable = transitive_reachable(dep_graph, start_rel)
 
-    # Filter to only .cpp files
-    cpp_files = [f for f in reachable if Path(f).suffix == ".cpp"]
+    # Filter based on include_headers flag
+    if include_headers:
+        # Include both .cpp and .h files
+        filtered_files = [f for f in reachable if Path(f).suffix in {".cpp", ".h"}]
+    else:
+        # Only .cpp files
+        filtered_files = [f for f in reachable if Path(f).suffix == ".cpp"]
 
     # Exclude the start file itself if it's a .cpp
-    if Path(start_rel).suffix == ".cpp" and start_rel in cpp_files:
-        cpp_files.remove(start_rel)
+    if Path(start_rel).suffix == ".cpp" and start_rel in filtered_files:
+        filtered_files.remove(start_rel)
 
-    return sorted(cpp_files)
+    return sorted(filtered_files)
