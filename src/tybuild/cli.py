@@ -2,6 +2,7 @@ import argparse
 import sys
 from pathlib import Path
 from tybuild.dependencies import get_cpp_dependencies
+from tybuild.projects import discover_projects
 
 # from tybuild.build import RunBuild
 # from tybuild.clean import Clean
@@ -34,6 +35,26 @@ def cmd_build(args):
     # RunBuild(args.target)
 
 
+def cmd_list(args):
+    """List all discovered projects."""
+    try:
+        base_path = Path(args.root).resolve() if args.root else None
+        projects = discover_projects(base_path)
+
+        if not projects:
+            print("No projects found in ./src/project", file=sys.stderr)
+            return
+
+        print(f"Found {len(projects)} project(s):")
+        print()
+        for project in projects:
+            print(f"  {project.type:15} {project.name}")
+
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='tybuild',
@@ -54,6 +75,12 @@ def main():
     parser_deps.add_argument('--refresh', action='store_true',
                             help='Rebuild dependency cache from scratch')
     parser_deps.set_defaults(func=cmd_deps)
+
+    # List command
+    parser_list = subparsers.add_parser('list', help='List all discovered projects')
+    parser_list.add_argument('--root', default=None,
+                           help='Root directory to search from (default: current directory)')
+    parser_list.set_defaults(func=cmd_list)
 
     args = parser.parse_args()
 
