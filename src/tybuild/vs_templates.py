@@ -263,6 +263,34 @@ def _replace_sources_in_vcxproj(xml_text: str, sources: List[str]) -> str:
     return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
 
 
+def _remove_custom_build_in_vcxproj(xml_text: str) -> str:
+    """
+    Remove all CustomBuild entries from a vcxproj file.
+
+    This removes CMake-generated custom build steps (typically for CMakeLists.txt)
+    that are not needed in tybuild-generated projects.
+
+    Args:
+        xml_text: The vcxproj file content as XML string
+
+    Returns:
+        Updated XML text with CustomBuild elements removed
+    """
+    root = ET.fromstring(xml_text)
+    ns = _detect_ns(root)
+    ET.register_namespace("", ns)
+
+    # Remove all CustomBuild elements and clean up empty ItemGroups
+    for ig in list(root.findall(_ns_tag(ns, "ItemGroup"))):
+        for cb in list(ig.findall(_ns_tag(ns, "CustomBuild"))):
+            ig.remove(cb)
+        # Remove ItemGroup if it's now empty
+        if len(ig) == 0:
+            root.remove(ig)
+
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
+
+
 def _replace_sources_in_filters(xml_text: str, sources: List[str]) -> str:
     """
     Replace all ClCompile (source file) entries in a vcxproj.filters file.
@@ -390,6 +418,9 @@ def generate_project_from_template(
     vcx_text = vcx_text.replace(template_name, project_name)
     if filt_text is not None:
         filt_text = filt_text.replace(template_name, project_name)
+
+    # Remove CMake-generated CustomBuild elements
+    vcx_text = _remove_custom_build_in_vcxproj(vcx_text)
 
     # Replace GUID using XML manipulation
     vcx_text = _replace_guid_in_vcxproj(vcx_text, project_guid)
