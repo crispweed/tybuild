@@ -199,6 +199,41 @@ def _backslash(path: str) -> str:
     return path.replace("/", "\\").replace(os.sep, "\\")
 
 
+def get_project_guid(project_file_path: Path) -> Optional[str]:
+    """
+    Extract the ProjectGuid from a Visual Studio project file.
+
+    Args:
+        project_file_path: Path to the .vcxproj file
+
+    Returns:
+        The project GUID without braces, or None if not found
+
+    Example:
+        >>> get_project_guid(Path('build/Server.vcxproj'))
+        '954D3659-7E49-38DA-AAF3-DE9306D58F9B'
+    """
+    try:
+        xml_text = project_file_path.read_text(encoding="utf-8", errors="replace")
+        root = ET.fromstring(xml_text)
+        ns = _detect_ns(root)
+
+        # Find Globals PropertyGroup
+        for pg in root.findall(_ns_tag(ns, "PropertyGroup")):
+            if pg.get("Label") == "Globals":
+                # Find ProjectGuid element
+                guid_el = pg.find(_ns_tag(ns, "ProjectGuid"))
+                if guid_el is not None and guid_el.text:
+                    # Strip curly braces if present
+                    guid_text = guid_el.text.strip()
+                    if guid_text.startswith("{") and guid_text.endswith("}"):
+                        return guid_text[1:-1]
+                    return guid_text
+        return None
+    except Exception:
+        return None
+
+
 def _replace_guid_in_vcxproj(xml_text: str, new_guid: str) -> str:
     """
     Replace the ProjectGuid in a vcxproj XML file.
