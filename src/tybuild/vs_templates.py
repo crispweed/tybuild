@@ -370,6 +370,205 @@ def _resolve_from_source_root(source_root: Path, rel_sources: List[str]) -> List
     return [str((source_root / s).resolve()) for s in rel_sources]
 
 
+def generate_utility_project(
+    project_name: str,
+    project_guid: str,
+    custom_build_rule_path: str,
+    message: str,
+    command: str,
+    additional_inputs: List[str],
+    outputs: str,
+    output_dir: Path
+) -> None:
+    """
+    Generate a utility project (like ZERO_CHECK or ONE_CHECK) with custom build commands.
+
+    This creates a Visual Studio "Utility" project that executes a custom build command
+    rather than compiling source files. Useful for build system validation, code generation, etc.
+
+    Args:
+        project_name: Name of the project (e.g., 'ONE_CHECK')
+        project_guid: GUID for the project (without braces)
+        custom_build_rule_path: Path to the .rule file that triggers the custom build
+        message: Message to display during build (e.g., 'Checking Build System')
+        command: The batch command to execute during build
+        additional_inputs: List of file paths that the custom build depends on
+        outputs: Path to the timestamp/stamp file that marks completion
+        output_dir: Directory where the project files should be written
+
+    Example:
+        generate_utility_project(
+            'ONE_CHECK',
+            '12345678-1234-5678-1234-567812345678',
+            'D:/myproject/build/CMakeFiles/check.rule',
+            'Running custom validation',
+            'setlocal\\npython validate.py\\nendlocal',
+            ['D:/myproject/CMakeLists.txt', 'D:/myproject/config.json'],
+            'D:/myproject/build/CMakeFiles/check.stamp',
+            Path('build/')
+        )
+    """
+    project_guid_with_braces = "{" + project_guid + "}"
+
+    # Configurations
+    configurations = ["Debug", "Release", "MinSizeRel", "RelWithDebInfo"]
+
+    # Create XML namespace
+    ns = "http://schemas.microsoft.com/developer/msbuild/2003"
+    ET.register_namespace("", ns)
+
+    def ns_tag(tag: str) -> str:
+        return f"{{{ns}}}{tag}"
+
+    # Build the vcxproj file
+    root = ET.Element(ns_tag("Project"), {
+        "DefaultTargets": "Build",
+        "ToolsVersion": "17.0",
+        "xmlns": ns
+    })
+
+    # PreferredToolArchitecture
+    pg = ET.SubElement(root, ns_tag("PropertyGroup"))
+    ET.SubElement(pg, ns_tag("PreferredToolArchitecture")).text = "x64"
+
+    # ResolveNugetPackages
+    pg = ET.SubElement(root, ns_tag("PropertyGroup"))
+    ET.SubElement(pg, ns_tag("ResolveNugetPackages")).text = "false"
+
+    # ProjectConfigurations
+    ig = ET.SubElement(root, ns_tag("ItemGroup"), {"Label": "ProjectConfigurations"})
+    for config in configurations:
+        pc = ET.SubElement(ig, ns_tag("ProjectConfiguration"), {"Include": f"{config}|x64"})
+        ET.SubElement(pc, ns_tag("Configuration")).text = config
+        ET.SubElement(pc, ns_tag("Platform")).text = "x64"
+
+    # Globals
+    pg = ET.SubElement(root, ns_tag("PropertyGroup"), {"Label": "Globals"})
+    ET.SubElement(pg, ns_tag("ProjectGuid")).text = project_guid_with_braces
+    ET.SubElement(pg, ns_tag("Keyword")).text = "Win32Proj"
+    ET.SubElement(pg, ns_tag("WindowsTargetPlatformVersion")).text = "10.0.22621.0"
+    ET.SubElement(pg, ns_tag("Platform")).text = "x64"
+    ET.SubElement(pg, ns_tag("ProjectName")).text = project_name
+    ET.SubElement(pg, ns_tag("VCProjectUpgraderObjectName")).text = "NoUpgrade"
+
+    # Import Default props
+    ET.SubElement(root, ns_tag("Import"), {"Project": "$(VCTargetsPath)\\Microsoft.Cpp.Default.props"})
+
+    # Configuration PropertyGroups
+    for config in configurations:
+        pg = ET.SubElement(root, ns_tag("PropertyGroup"), {
+            "Condition": f"'$(Configuration)|$(Platform)'=='{config}|x64'",
+            "Label": "Configuration"
+        })
+        ET.SubElement(pg, ns_tag("ConfigurationType")).text = "Utility"
+        ET.SubElement(pg, ns_tag("CharacterSet")).text = "MultiByte"
+        ET.SubElement(pg, ns_tag("PlatformToolset")).text = "v143"
+
+    # Import Cpp props
+    ET.SubElement(root, ns_tag("Import"), {"Project": "$(VCTargetsPath)\\Microsoft.Cpp.props"})
+
+    # ExtensionSettings
+    ET.SubElement(root, ns_tag("ImportGroup"), {"Label": "ExtensionSettings"})
+
+    # PropertySheets
+    ig = ET.SubElement(root, ns_tag("ImportGroup"), {"Label": "PropertySheets"})
+    ET.SubElement(ig, ns_tag("Import"), {
+        "Project": "$(UserRootDir)\\Microsoft.Cpp.$(Platform).user.props",
+        "Condition": "exists('$(UserRootDir)\\Microsoft.Cpp.$(Platform).user.props')",
+        "Label": "LocalAppDataPlatform"
+    })
+
+    # UserMacros
+    ET.SubElement(root, ns_tag("PropertyGroup"), {"Label": "UserMacros"})
+
+    # IntDir PropertyGroup
+    pg = ET.SubElement(root, ns_tag("PropertyGroup"))
+    ET.SubElement(pg, ns_tag("_ProjectFileVersion")).text = "10.0.20506.1"
+    for config in configurations:
+        ET.SubElement(pg, ns_tag("IntDir"), {
+            "Condition": f"'$(Configuration)|$(Platform)'=='{config}|x64'"
+        }).text = f"$(Platform)\\$(Configuration)\\$(ProjectName)\\"
+
+    # ItemDefinitionGroups (for Midl)
+    for config in configurations:
+        idg = ET.SubElement(root, ns_tag("ItemDefinitionGroup"), {
+            "Condition": f"'$(Configuration)|$(Platform)'=='{config}|x64'"
+        })
+        midl = ET.SubElement(idg, ns_tag("Midl"))
+        # Note: AdditionalIncludeDirectories would need to be parameterized if needed
+        ET.SubElement(midl, ns_tag("OutputDirectory")).text = "$(ProjectDir)/$(IntDir)"
+        ET.SubElement(midl, ns_tag("HeaderFileName")).text = "%(Filename).h"
+        ET.SubElement(midl, ns_tag("TypeLibraryName")).text = "%(Filename).tlb"
+        ET.SubElement(midl, ns_tag("InterfaceIdentifierFileName")).text = "%(Filename)_i.c"
+        ET.SubElement(midl, ns_tag("ProxyFileName")).text = "%(Filename)_p.c"
+
+    # CustomBuild ItemGroup
+    ig = ET.SubElement(root, ns_tag("ItemGroup"))
+    cb = ET.SubElement(ig, ns_tag("CustomBuild"), {"Include": custom_build_rule_path})
+    ET.SubElement(cb, ns_tag("UseUtf8Encoding")).text = "Always"
+
+    # Add custom build properties for each configuration
+    for config in configurations:
+        condition = f"'$(Configuration)|$(Platform)'=='{config}|x64'"
+        ET.SubElement(cb, ns_tag("BuildInParallel"), {"Condition": condition}).text = "true"
+        ET.SubElement(cb, ns_tag("Message"), {"Condition": condition}).text = message
+        ET.SubElement(cb, ns_tag("Command"), {"Condition": condition}).text = command
+
+        # Join additional inputs with semicolons
+        inputs_str = ";".join(additional_inputs)
+        if inputs_str:
+            inputs_str += ";%(AdditionalInputs)"
+        else:
+            inputs_str = "%(AdditionalInputs)"
+        ET.SubElement(cb, ns_tag("AdditionalInputs"), {"Condition": condition}).text = inputs_str
+
+        ET.SubElement(cb, ns_tag("Outputs"), {"Condition": condition}).text = outputs
+        ET.SubElement(cb, ns_tag("LinkObjects"), {"Condition": condition}).text = "false"
+
+    # Empty ItemGroups (for consistency with CMake output)
+    ET.SubElement(root, ns_tag("ItemGroup"))
+    ET.SubElement(root, ns_tag("ItemGroup"))
+
+    # Import Cpp targets
+    ET.SubElement(root, ns_tag("Import"), {"Project": "$(VCTargetsPath)\\Microsoft.Cpp.targets"})
+
+    # ExtensionTargets
+    ET.SubElement(root, ns_tag("ImportGroup"), {"Label": "ExtensionTargets"})
+
+    # Write vcxproj file
+    output_dir.mkdir(parents=True, exist_ok=True)
+    vcxproj_path = output_dir / f"{project_name}.vcxproj"
+
+    # Convert to string with proper formatting
+    xml_str = ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
+    # Add BOM
+    xml_str = "\ufeff" + xml_str
+    vcxproj_path.write_text(xml_str, encoding="utf-8-sig")
+
+    # Build the .filters file
+    root_filters = ET.Element(ns_tag("Project"), {
+        "ToolsVersion": "17.0",
+        "xmlns": ns
+    })
+
+    # CustomBuild ItemGroup
+    ig = ET.SubElement(root_filters, ns_tag("ItemGroup"))
+    cb = ET.SubElement(ig, ns_tag("CustomBuild"), {"Include": custom_build_rule_path})
+    ET.SubElement(cb, ns_tag("Filter")).text = "CMake Rules"
+
+    # Filter ItemGroup
+    ig = ET.SubElement(root_filters, ns_tag("ItemGroup"))
+    flt = ET.SubElement(ig, ns_tag("Filter"), {"Include": "CMake Rules"})
+    ET.SubElement(flt, ns_tag("UniqueIdentifier")).text = "{76AC2980-1951-3AA2-B7EF-A79AB4F1C49E}"
+
+    # Write filters file
+    filters_path = output_dir / f"{project_name}.vcxproj.filters"
+    xml_str = ET.tostring(root_filters, encoding="utf-8", xml_declaration=True).decode("utf-8")
+    # Add BOM
+    xml_str = "\ufeff" + xml_str
+    filters_path.write_text(xml_str, encoding="utf-8-sig")
+
+
 def generate_project_from_template(
     template_path: Path,
     template_name: str,
