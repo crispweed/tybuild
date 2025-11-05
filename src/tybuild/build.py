@@ -20,11 +20,8 @@ from tybuild.vs_templates import (
     generate_project_from_template,
     generate_project_guid,
     generate_solution,
+    get_project_guid,
 )
-
-# Hardcoded GUIDs for special CMake projects
-ALL_BUILD_GUID = "5C330799-6FA6-33C3-B12C-755A9CA12672"
-ZERO_CHECK_GUID = "46BE4EB3-B0FD-3982-8000-AE0905052172"
 
 CACHE_FILENAME = ".tybuild"
 
@@ -163,8 +160,24 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
     else:
         print(f"Using existing solution GUID: {solution_guid}")
 
-    all_build_guid = ALL_BUILD_GUID
-    zero_check_guid = ZERO_CHECK_GUID
+    # Extract GUIDs from copied project files
+    all_build_path = build_dir / "ALL_BUILD.vcxproj"
+    zero_check_path = build_dir / "ZERO_CHECK.vcxproj"
+
+    all_build_guid = get_project_guid(all_build_path)
+    if all_build_guid is None:
+        raise RuntimeError(
+            f"Failed to extract GUID from {all_build_path}. "
+            f"Ensure the file exists and contains a valid ProjectGuid element."
+        )
+
+    zero_check_guid = get_project_guid(zero_check_path)
+    if zero_check_guid is None:
+        raise RuntimeError(
+            f"Failed to extract GUID from {zero_check_path}. "
+            f"Ensure the file exists and contains a valid ProjectGuid element."
+        )
+
     print(f"ALL_BUILD GUID: {all_build_guid}")
     print(f"ZERO_CHECK GUID: {zero_check_guid}")
     print()
