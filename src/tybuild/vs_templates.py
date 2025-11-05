@@ -70,15 +70,17 @@ def generate_solution(
     solution_guid: str,
     all_build_guid: str,
     zero_check_guid: str,
+    one_check_guid: str,
     projects_to_add: List[Tuple[str, str]]
 ) -> None:
     """
-    Generate a solution file like the one generate by cmake, with ALL_BUILD and ZERO_CHECK project, plus a number of our own projects.
+    Generate a solution file like the one generate by cmake, with ALL_BUILD, ZERO_CHECK, and ONE_CHECK projects, plus a number of our own projects.
 
     Args:
         output_sln_path: Path where the generated solution should be written
         all_build_guid: GUID for the ALL_BUILD project
         zero_check_guid: GUID for the ZERO_CHECK project
+        one_check_guid: GUID for the ONE_CHECK project
         projects_to_add: List of (project_name, project_guid) tuples for projects to add to the solution
 
     Example:
@@ -86,6 +88,7 @@ def generate_solution(
             Path('Generated.sln'),
             '5C330799-6FA6-33C3-B12C-755A9CA12672',
             '46BE4EB3-B0FD-3982-8000-AE0905052172',
+            '1E71EEE3-975D-4B10-9620-A4C9F0B25EC9',
             [
                 ('Server', '954D3659-7E49-38DA-AAF3-DE9306D58F9B'),
                 ('Client', '19EF89DE-8F64-33EA-8F28-40499A66EA07'),
@@ -95,6 +98,7 @@ def generate_solution(
     solution_guid = "{" + solution_guid + "}"
     all_build_guid = "{" + all_build_guid + "}"
     zero_check_guid = "{" + zero_check_guid + "}"
+    one_check_guid = "{" + one_check_guid + "}"
 
     # Configuration platforms
     configurations = ["Debug|x64", "Release|x64", "MinSizeRel|x64", "RelWithDebInfo|x64"]
@@ -110,22 +114,30 @@ def generate_solution(
     # ALL_BUILD project (depends on all other projects)
     lines.append(f'Project("{VC_PROJECT_TYPE_GUID}") = "ALL_BUILD", "ALL_BUILD.vcxproj", "{all_build_guid}"')
     lines.append("\tProjectSection(ProjectDependencies) = postProject")
-    # ALL_BUILD depends on all user projects and ZERO_CHECK
+    # ALL_BUILD depends on all user projects, ONE_CHECK, and ZERO_CHECK
     for project_name, project_guid in projects_to_add:
         formatted_guid = '{' + project_guid + '}'
         lines.append(f"\t\t{formatted_guid} = {formatted_guid}")
+    lines.append(f"\t\t{one_check_guid} = {one_check_guid}")
     lines.append(f"\t\t{zero_check_guid} = {zero_check_guid}")
     lines.append("\tEndProjectSection")
     lines.append("EndProject")
 
-    # User projects (each depends on ZERO_CHECK)
+    # User projects (each depends on ONE_CHECK and ZERO_CHECK)
     for project_name, project_guid in projects_to_add:
         formatted_guid = '{' + project_guid + '}'
         lines.append(f'Project("{VC_PROJECT_TYPE_GUID}") = "{project_name}", "{project_name}.vcxproj", "{formatted_guid}"')
         lines.append("\tProjectSection(ProjectDependencies) = postProject")
+        lines.append(f"\t\t{one_check_guid} = {one_check_guid}")
         lines.append(f"\t\t{zero_check_guid} = {zero_check_guid}")
         lines.append("\tEndProjectSection")
         lines.append("EndProject")
+
+    # ONE_CHECK project (no dependencies)
+    lines.append(f'Project("{VC_PROJECT_TYPE_GUID}") = "ONE_CHECK", "ONE_CHECK.vcxproj", "{one_check_guid}"')
+    lines.append("\tProjectSection(ProjectDependencies) = postProject")
+    lines.append("\tEndProjectSection")
+    lines.append("EndProject")
 
     # ZERO_CHECK project (no dependencies)
     lines.append(f'Project("{VC_PROJECT_TYPE_GUID}") = "ZERO_CHECK", "ZERO_CHECK.vcxproj", "{zero_check_guid}"')
@@ -157,6 +169,12 @@ def generate_solution(
             config_name = config.split('|')[0]
             lines.append(f"\t\t{formatted_guid}.{config}.ActiveCfg = {config}")
             lines.append(f"\t\t{formatted_guid}.{config}.Build.0 = {config}")
+
+    # ONE_CHECK: ActiveCfg and Build.0
+    for config in configurations:
+        config_name = config.split('|')[0]
+        lines.append(f"\t\t{one_check_guid}.{config}.ActiveCfg = {config}")
+        lines.append(f"\t\t{one_check_guid}.{config}.Build.0 = {config}")
 
     # ZERO_CHECK: ActiveCfg and Build.0
     for config in configurations:

@@ -14,6 +14,12 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+try:
+    from importlib.resources import files
+except ImportError:
+    # Python < 3.9
+    from importlib_resources import files
+
 from tybuild.dependencies import get_cpp_dependencies
 from tybuild.projects import discover_projects, Project
 from tybuild.vs_templates import (
@@ -63,20 +69,22 @@ def _save_build_cache(cache_path: Path, cache: Dict[str, Any]) -> None:
 
 def _copy_special_projects(template_dir: Path, build_dir: Path) -> None:
     """
-    Copy ALL_BUILD and ZERO_CHECK project files from template to build directory.
+    Copy ALL_BUILD and ZERO_CHECK project files from template to build directory,
+    and ONE_CHECK from package templates.
 
     Args:
         template_dir: Directory containing template files
         build_dir: Target directory for build files
     """
-    special_files = [
+    # Copy user-provided templates (ALL_BUILD and ZERO_CHECK)
+    user_template_files = [
         "ALL_BUILD.vcxproj",
         "ALL_BUILD.vcxproj.filters",
         "ZERO_CHECK.vcxproj",
         "ZERO_CHECK.vcxproj.filters",
     ]
 
-    for filename in special_files:
+    for filename in user_template_files:
         src = template_dir / filename
         dst = build_dir / filename
 
@@ -85,6 +93,20 @@ def _copy_special_projects(template_dir: Path, build_dir: Path) -> None:
             print(f"  Copied: {filename}")
         else:
             print(f"  Warning: Template file not found: {filename}", file=sys.stderr)
+
+    # Copy built-in templates (ONE_CHECK) from package
+    builtin_templates = ["ONE_CHECK.vcxproj"]
+
+    templates_path = files("tybuild").joinpath("templates")
+    for filename in builtin_templates:
+        try:
+            # Read from package resources
+            template_content = templates_path.joinpath(filename).read_text(encoding="utf-8")
+            dst = build_dir / filename
+            dst.write_text(template_content, encoding="utf-8")
+            print(f"  Copied: {filename} (built-in)")
+        except Exception as e:
+            print(f"  Warning: Failed to copy built-in template {filename}: {e}", file=sys.stderr)
 
 
 def generate_build_files(base_path: Optional[Path] = None, force: bool = False) -> List[Project]:
@@ -163,6 +185,7 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
     # Extract GUIDs from copied project files
     all_build_path = build_dir / "ALL_BUILD.vcxproj"
     zero_check_path = build_dir / "ZERO_CHECK.vcxproj"
+    one_check_path = build_dir / "ONE_CHECK.vcxproj"
 
     all_build_guid = get_project_guid(all_build_path)
     if all_build_guid is None:
@@ -178,8 +201,16 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
             f"Ensure the file exists and contains a valid ProjectGuid element."
         )
 
+    one_check_guid = get_project_guid(one_check_path)
+    if one_check_guid is None:
+        raise RuntimeError(
+            f"Failed to extract GUID from {one_check_path}. "
+            f"Ensure the file exists and contains a valid ProjectGuid element."
+        )
+
     print(f"ALL_BUILD GUID: {all_build_guid}")
     print(f"ZERO_CHECK GUID: {zero_check_guid}")
+    print(f"ONE_CHECK GUID: {one_check_guid}")
     print()
 
     # Check if project set changed (for solution regeneration)
@@ -291,6 +322,7 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
             solution_guid=solution_guid,
             all_build_guid=all_build_guid,
             zero_check_guid=zero_check_guid,
+            one_check_guid=one_check_guid,
             projects_to_add=projects_to_add,
         )
         print(f"Generated solution: {sln_path}")
