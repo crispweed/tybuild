@@ -74,7 +74,13 @@ def generate_solution(
     projects_to_add: List[Tuple[str, str]]
 ) -> None:
     """
-    Generate a solution file like the one generate by cmake, with ALL_BUILD, ZERO_CHECK, and ONE_CHECK projects, plus a number of our own projects.
+    Generate a solution file with ALL_BUILD, ZERO_CHECK, and ONE_CHECK projects, plus user projects.
+
+    Dependency chain:
+    - ZERO_CHECK (no dependencies, runs first)
+    - ONE_CHECK (depends on ZERO_CHECK)
+    - User projects (depend on ONE_CHECK)
+    - ALL_BUILD (depends on all user projects, ONE_CHECK, and ZERO_CHECK)
 
     Args:
         output_sln_path: Path where the generated solution should be written
@@ -84,8 +90,9 @@ def generate_solution(
         projects_to_add: List of (project_name, project_guid) tuples for projects to add to the solution
 
     Example:
-        generate_solution_from_template(
+        generate_solution(
             Path('Generated.sln'),
+            'SOLUTION-GUID-HERE',
             '5C330799-6FA6-33C3-B12C-755A9CA12672',
             '46BE4EB3-B0FD-3982-8000-AE0905052172',
             '1E71EEE3-975D-4B10-9620-A4C9F0B25EC9',
@@ -123,19 +130,19 @@ def generate_solution(
     lines.append("\tEndProjectSection")
     lines.append("EndProject")
 
-    # User projects (each depends on ONE_CHECK and ZERO_CHECK)
+    # User projects (each depends on ONE_CHECK only)
     for project_name, project_guid in projects_to_add:
         formatted_guid = '{' + project_guid + '}'
         lines.append(f'Project("{VC_PROJECT_TYPE_GUID}") = "{project_name}", "{project_name}.vcxproj", "{formatted_guid}"')
         lines.append("\tProjectSection(ProjectDependencies) = postProject")
         lines.append(f"\t\t{one_check_guid} = {one_check_guid}")
-        lines.append(f"\t\t{zero_check_guid} = {zero_check_guid}")
         lines.append("\tEndProjectSection")
         lines.append("EndProject")
 
-    # ONE_CHECK project (no dependencies)
+    # ONE_CHECK project (depends on ZERO_CHECK)
     lines.append(f'Project("{VC_PROJECT_TYPE_GUID}") = "ONE_CHECK", "ONE_CHECK.vcxproj", "{one_check_guid}"')
     lines.append("\tProjectSection(ProjectDependencies) = postProject")
+    lines.append(f"\t\t{zero_check_guid} = {zero_check_guid}")
     lines.append("\tEndProjectSection")
     lines.append("EndProject")
 
