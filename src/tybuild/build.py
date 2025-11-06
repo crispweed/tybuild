@@ -67,15 +67,28 @@ def _save_build_cache(cache_path: Path, cache: Dict[str, Any]) -> None:
         json.dump(cache, f, indent=2, sort_keys=True)
 
 
-def _copy_special_projects(template_dir: Path, build_dir: Path) -> None:
+def _copy_special_projects(
+    template_dir: Path,
+    build_dir: Path,
+    cache: Dict[str, Any],
+    force: bool = False
+) -> Dict[str, Dict[str, int]]:
     """
     Copy ALL_BUILD and ZERO_CHECK project files from template to build directory,
-    and ONE_CHECK from package templates.
+    and ONE_CHECK from package templates. Only copies if files have changed.
 
     Args:
         template_dir: Directory containing template files
         build_dir: Target directory for build files
+        cache: Build cache dictionary
+        force: If True, copy all files regardless of cache
+
+    Returns:
+        Dictionary mapping filenames to their file identities (size, mtime_ns)
     """
+    special_projects_cache = cache.get("special_projects", {})
+    new_identities = {}
+
     # Copy user-provided templates (ALL_BUILD and ZERO_CHECK)
     user_template_files = [
         "ALL_BUILD.vcxproj",
@@ -88,11 +101,31 @@ def _copy_special_projects(template_dir: Path, build_dir: Path) -> None:
         src = template_dir / filename
         dst = build_dir / filename
 
-        if src.exists():
-            shutil.copy2(src, dst)
-            print(f"  Copied: {filename}")
-        else:
+        if not src.exists():
             print(f"  Warning: Template file not found: {filename}", file=sys.stderr)
+            continue
+
+        # Check if we need to copy
+        needs_copy = force
+        reason = "--force flag"
+
+        if not needs_copy:
+            cached_identity = special_projects_cache.get(filename, {})
+            if _file_changed(src, cached_identity):
+                needs_copy = True
+                reason = "file changed"
+            elif not dst.exists():
+                needs_copy = True
+                reason = "destination missing"
+
+        if needs_copy:
+            shutil.copy2(src, dst)
+            print(f"  Copied: {filename} ({reason})")
+        else:
+            print(f"  Up to date: {filename}")
+
+        # Store identity
+        new_identities[filename] = _get_file_identity(src)
 
     # Copy built-in templates (ONE_CHECK) from package
     builtin_templates = ["ONE_CHECK.vcxproj"]
@@ -100,13 +133,48 @@ def _copy_special_projects(template_dir: Path, build_dir: Path) -> None:
     templates_path = files("tybuild").joinpath("templates")
     for filename in builtin_templates:
         try:
-            # Read from package resources
-            template_content = templates_path.joinpath(filename).read_text(encoding="utf-8")
             dst = build_dir / filename
-            dst.write_text(template_content, encoding="utf-8")
-            print(f"  Copied: {filename} (built-in)")
+            template_resource = templates_path.joinpath(filename)
+
+            # For package resources, we need to check by content or always copy
+            # Since we can't easily get mtime from package resources, we'll check
+            # if destination exists and compare sizes
+            needs_copy = force
+            reason = "--force flag"
+
+            if not needs_copy:
+                # Get the content to check size
+                template_content = template_resource.read_text(encoding="utf-8")
+                content_size = len(template_content.encode("utf-8"))
+
+                cached_identity = special_projects_cache.get(filename, {})
+                if cached_identity.get("size") != content_size:
+                    needs_copy = True
+                    reason = "content size changed"
+                elif not dst.exists():
+                    needs_copy = True
+                    reason = "destination missing"
+
+                if needs_copy:
+                    dst.write_text(template_content, encoding="utf-8")
+                    print(f"  Copied: {filename} (built-in, {reason})")
+                else:
+                    print(f"  Up to date: {filename} (built-in)")
+
+                # Store identity (size only for package resources)
+                new_identities[filename] = {"size": content_size, "mtime_ns": 0}
+            else:
+                # Force copy
+                template_content = template_resource.read_text(encoding="utf-8")
+                dst.write_text(template_content, encoding="utf-8")
+                print(f"  Copied: {filename} (built-in, {reason})")
+                content_size = len(template_content.encode("utf-8"))
+                new_identities[filename] = {"size": content_size, "mtime_ns": 0}
+
         except Exception as e:
             print(f"  Warning: Failed to copy built-in template {filename}: {e}", file=sys.stderr)
+
+    return new_identities
 
 
 def generate_build_files(base_path: Optional[Path] = None, force: bool = False) -> List[Project]:
@@ -154,9 +222,13 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
     # Create build directory
     build_dir.mkdir(exist_ok=True)
 
-    # Copy special CMake project files
+    # Load build cache early so we can use it for special projects
+    cache_path = build_dir / CACHE_FILENAME
+    build_cache = {} if force else _load_build_cache(cache_path)
+
+    # Copy special CMake project files (only if changed)
     print("Copying special project files...")
-    _copy_special_projects(template_dir, build_dir)
+    special_projects_identities = _copy_special_projects(template_dir, build_dir, build_cache, force)
     print()
 
     # Discover projects
@@ -169,10 +241,6 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
     for project in projects:
         print(f"  {project.type:15} {project.name}")
     print()
-
-    # Load build cache
-    cache_path = build_dir / CACHE_FILENAME
-    build_cache = {} if force else _load_build_cache(cache_path)
 
     # Get or generate solution GUID
     solution_guid = build_cache.get("solution_guid")
@@ -228,6 +296,7 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
     projects_to_add = []
     new_cache = {
         "solution_guid": solution_guid,
+        "special_projects": special_projects_identities,
         "projects": []
     }
 
