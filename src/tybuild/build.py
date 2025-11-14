@@ -307,7 +307,7 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
         project_guid = generate_project_guid(project.type, project.name)
 
         # Get dependencies for the main cpp file
-        cpp_deps = get_cpp_dependencies(src_root, project.cpp_file, include_headers=False)
+        cpp_deps = get_cpp_dependencies(src_root, build_dir, project.cpp_file, include_headers=False)
 
         # Build sources list: main cpp + cpp dependencies
         main_cpp_rel = project.cpp_file.relative_to(src_root).as_posix()

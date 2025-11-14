@@ -15,7 +15,7 @@ def cmd_deps(args):
         root = Path(args.root).resolve()
         start_file = Path(args.start).resolve()
 
-        deps = get_cpp_dependencies(root, start_file, refresh=args.refresh)
+        deps = get_cpp_dependencies(root, root, start_file, refresh=args.refresh)
 
         for dep in deps:
             print(dep)
@@ -138,7 +138,7 @@ def cmd_test_prj(args):
         src_root = Path('./src/').resolve()
         start_file = Path('./src/project/sdl3/Client.cpp').resolve()
 
-        deps = get_cpp_dependencies(src_root, start_file)
+        deps = get_cpp_dependencies(src_root, src_root, start_file)
 
         generate_project_from_template(
             template_path,

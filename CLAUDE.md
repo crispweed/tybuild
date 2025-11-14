@@ -56,7 +56,7 @@
 **Purpose**: Analyzes C++ include dependencies
 
 **Key Functions**:
-- `get_cpp_dependencies(root, start_file, include_headers=False)` → List of relative paths
+- `get_cpp_dependencies(root, build_root, start_file, include_headers=False)` → List of relative paths
   - Scans for `#include "..."` statements
   - Builds transitive dependency graph
   - Includes implicit header→source relationships (same directory/stem)

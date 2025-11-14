@@ -286,7 +286,7 @@ def ensure_file_in_cache(root: Path, cache: Cache, file_path: Path) -> str:
     return rel_path
 
 
-def get_cpp_dependencies(root: Path, start_file: Path, refresh: bool = False, include_headers: bool = False) -> List[str]:
+def get_cpp_dependencies(root: Path, build_root: Path, start_file: Path, refresh: bool = False, include_headers: bool = False) -> List[str]:
     """
     Get all .cpp file dependencies for a given start file.
 
@@ -305,7 +305,7 @@ def get_cpp_dependencies(root: Path, start_file: Path, refresh: bool = False, in
     """
     root = root.resolve()
     start_file = start_file.resolve()
-    cache_path = root / CACHE_FILENAME
+    cache_path = build_root / CACHE_FILENAME
 
     # Scan and build cache
     cache = scan(root, cache_path, refresh=refresh)
