@@ -127,6 +127,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <BuildInParallel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</BuildInParallel>
       <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Checking Build System (tybuild)</Message>
       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
+cd ..
 D:\tybuild\venv\Scripts\python.exe -m tybuild generate
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
@@ -140,6 +141,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <BuildInParallel Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">true</BuildInParallel>
       <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Checking Build System (tybuild)</Message>
       <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
+cd ..
 D:\tybuild\venv\Scripts\python.exe -m tybuild generate
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
@@ -153,6 +155,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <BuildInParallel Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</BuildInParallel>
       <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Checking Build System (tybuild)</Message>
       <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
+cd ..
 D:\tybuild\venv\Scripts\python.exe -m tybuild generate
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
