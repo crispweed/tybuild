@@ -37,11 +37,11 @@
 └── ZERO_CHECK.vcxproj.filters
 
 ./build/                # Generated output (not in repo)
+├── .tybuild            # Build cache (JSON) - deleted when build dir is cleaned
 ├── Solution.sln        # Generated solution
 ├── <ProjectName>.vcxproj
 └── <ProjectName>.vcxproj.filters
 
-./.tybuild              # Build cache (JSON, in repository root)
 ./includes.cache        # Dependency cache (JSON, in repository root)
 ```
 
@@ -157,7 +157,11 @@ Projects regenerated ONLY when:
 
 **Rationale**: Visual Studio handles source content changes during compilation. We only need to regenerate project structure when the included files actually change.
 
-### Cache Format (`.tybuild`)
+### Cache Locations
+- **Build cache** (`./build/.tybuild`): Stores Visual Studio project generation state. Deleted when user cleans the build directory.
+- **Dependency cache** (`./includes.cache`): Stores C++ include dependency scan results. Persists in repository root across build cleanups.
+
+### Build Cache Format (`./build/.tybuild`)
 ```json
 {
   "solution_guid": "...",
