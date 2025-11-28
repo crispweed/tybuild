@@ -21,6 +21,7 @@
 ├── projects.py         # Project discovery logic
 ├── dependencies.py     # C++ dependency scanning
 ├── vs_templates.py     # Visual Studio file generation
+├── cmake_export.py     # CMake project export
 └── build.py            # Main build orchestration
 
 ./src/project/          # User's C++ projects (not in repo)
@@ -36,10 +37,12 @@
 └── ZERO_CHECK.vcxproj.filters
 
 ./build/                # Generated output (not in repo)
-├── .tybuild            # Build cache (JSON)
 ├── Solution.sln        # Generated solution
 ├── <ProjectName>.vcxproj
 └── <ProjectName>.vcxproj.filters
+
+./.tybuild              # Build cache (JSON, in repository root)
+./includes.cache        # Dependency cache (JSON, in repository root)
 ```
 
 ## Core Modules
@@ -56,18 +59,20 @@
 **Purpose**: Analyzes C++ include dependencies
 
 **Key Functions**:
-- `get_cpp_dependencies(root, build_root, start_file, include_headers=False)` → List of relative paths
+- `get_cpp_dependencies(repo_root, start_file, refresh=False, include_headers=False)` → List of relative paths
+  - `repo_root`: Repository root directory (scans under `./src`, cache stored at `./includes.cache`)
   - Scans for `#include "..."` statements
   - Builds transitive dependency graph
   - Includes implicit header→source relationships (same directory/stem)
   - Can filter to .cpp only or include .h files
+  - Returns paths relative to `./src`
 
 **Include Resolution Strategy**:
 1. Try relative to including file's directory
 2. Try relative to source root (if step 1 fails)
 3. Warn if both fail
 
-**Caching**: Uses `includes.cache` for performance (tracks file size + mtime_ns)
+**Caching**: Uses `./includes.cache` (in repository root) for performance (tracks file size + mtime_ns)
 
 ### 3. `vs_templates.py`
 **Purpose**: Generates Visual Studio project and solution files
@@ -110,14 +115,28 @@
 - ALL_BUILD: `5C330799-6FA6-33C3-B12C-755A9CA12672`
 - ZERO_CHECK: `46BE4EB3-B0FD-3982-8000-AE0905052172`
 
-### 5. `cli.py`
+### 5. `cmake_export.py`
+**Purpose**: Export project information for CMake integration
+
+**Key Function**: `generate_cmake_file(repo_root, output_path)`
+- Discovers all projects using `discover_projects()`
+- For each project, gets dependencies using `get_cpp_dependencies()`
+- Generates a CMake file with format:
+  - `GENERATED_PROJECTS` - semicolon-separated list of project names
+  - `<ProjectName>_TYPE` - project type for each project
+  - `<ProjectName>_SOURCES` - list of source files relative to `./src`
+
+### 6. `cli.py`
 **Purpose**: Command-line interface
 
-**Commands**:
-- `tybuild generate [--root DIR] [--force]` - Generate build files
-- `tybuild list [--root DIR]` - List discovered projects
-- `tybuild deps ROOT START [--refresh]` - Show dependencies for a file
+**Commands** (all run from repository root):
+- `tybuild generate [--force]` - Generate Visual Studio build files
+- `tybuild list` - List discovered projects
+- `tybuild deps START [--refresh]` - Show dependencies for a file
+- `tybuild generate-cmake` - Generate CMake project list
 - `tybuild build TARGET [--clean]` - (Not implemented yet)
+
+**Important**: All commands assume they are run from the repository root directory, which must contain a `./src` subdirectory. The `--root` parameter has been removed from all commands.
 
 ## Important Design Decisions
 
@@ -170,13 +189,19 @@ Projects regenerated ONLY when:
 
 ### Debugging Dependency Issues
 - Check warnings from `resolve_include()` in stderr
-- Run `tybuild deps ./src ./src/project/<type>/<Name>.cpp` to see what's being found
+- Run `tybuild deps ./src/project/<type>/<Name>.cpp` to see what's being found (from repository root)
 - Use `--refresh` to rebuild dependency cache from scratch
 
 ### Force Full Rebuild
 ```bash
 tybuild generate --force
 ```
+
+### Generate CMake Project List
+```bash
+tybuild generate-cmake
+```
+Generates `./generated_projects.cmake` with project information for CMake integration.
 
 ## Testing Commands
 

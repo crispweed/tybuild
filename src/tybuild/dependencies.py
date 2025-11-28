@@ -286,7 +286,7 @@ def ensure_file_in_cache(root: Path, cache: Cache, file_path: Path) -> str:
     return rel_path
 
 
-def get_cpp_dependencies(root: Path, build_root: Path, start_file: Path, refresh: bool = False, include_headers: bool = False) -> List[str]:
+def get_cpp_dependencies(repo_root: Path, start_file: Path, refresh: bool = False, include_headers: bool = False) -> List[str]:
     """
     Get all .cpp file dependencies for a given start file.
 
@@ -295,7 +295,7 @@ def get_cpp_dependencies(root: Path, build_root: Path, start_file: Path, refresh
     - Implicit header->source relationships (same directory and stem)
 
     Args:
-        root: Root directory containing the source tree
+        repo_root: Repository root directory (contains ./src, cache stored here)
         start_file: The starting .cpp or .h file (absolute path)
         refresh: If True, rebuild cache from scratch
         include_headers: If True, also return .h files in dependencies
@@ -303,15 +303,16 @@ def get_cpp_dependencies(root: Path, build_root: Path, start_file: Path, refresh
     Returns:
         Sorted list of relative paths to .cpp dependencies (and .h if include_headers=True)
     """
-    root = root.resolve()
+    repo_root = repo_root.resolve()
+    src_root = repo_root / "src"
     start_file = start_file.resolve()
-    cache_path = build_root / CACHE_FILENAME
+    cache_path = repo_root / CACHE_FILENAME
 
-    # Scan and build cache
-    cache = scan(root, cache_path, refresh=refresh)
+    # Scan and build cache (scan under src directory)
+    cache = scan(src_root, cache_path, refresh=refresh)
 
     # Ensure start file is in cache
-    start_rel = ensure_file_in_cache(root, cache, start_file)
+    start_rel = ensure_file_in_cache(src_root, cache, start_file)
 
     # Build dependency graph and find reachable files
     dep_graph = build_dependency_graph(cache)

@@ -190,7 +190,7 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
     Uses incremental regeneration:
     - Only regenerates projects if template or dependencies changed
     - Only regenerates solution if project set changed
-    - Stores cache in ./build/.tybuild
+    - Stores cache in ./.tybuild (repository root)
 
     Args:
         base_path: Base directory (defaults to current working directory)
@@ -222,8 +222,8 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
     # Create build directory
     build_dir.mkdir(exist_ok=True)
 
-    # Load build cache early so we can use it for special projects
-    cache_path = build_dir / CACHE_FILENAME
+    # Load build cache from repository root
+    cache_path = base_path / CACHE_FILENAME
     build_cache = {} if force else _load_build_cache(cache_path)
 
     # Copy special CMake project files (only if changed)
@@ -307,7 +307,7 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
         project_guid = generate_project_guid(project.type, project.name)
 
         # Get dependencies for the main cpp file
-        cpp_deps = get_cpp_dependencies(src_root, build_dir, project.cpp_file, include_headers=False)
+        cpp_deps = get_cpp_dependencies(base_path, project.cpp_file, include_headers=False)
 
         # Build sources list: main cpp + cpp dependencies
         main_cpp_rel = project.cpp_file.relative_to(src_root).as_posix()
