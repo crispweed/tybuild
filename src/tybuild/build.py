@@ -301,6 +301,9 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
     }
 
     for project in projects:
+        if project.type == "wasm":
+            continue
+
         print(f"Processing {project.type}/{project.name}...")
 
         # Generate deterministic GUID for this project
