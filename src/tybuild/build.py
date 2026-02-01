@@ -30,6 +30,12 @@ from tybuild.vs_templates import (
 )
 
 CACHE_FILENAME = ".tybuild"
+EXCLUDED_PROJECT_TYPES = {"wasm"}
+
+
+def _is_vs_project(project: Project) -> bool:
+    """Return True if project should be generated as a VS project."""
+    return project.type not in EXCLUDED_PROJECT_TYPES
 
 
 def _get_file_identity(path: Path) -> Dict[str, int]:
@@ -233,6 +239,7 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
 
     # Discover projects
     projects = discover_projects(base_path)
+    vs_projects = [project for project in projects if _is_vs_project(project)]
 
     if not projects:
         raise RuntimeError("No projects found in ./src/project/")
@@ -282,8 +289,12 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
     print()
 
     # Check if project set changed (for solution regeneration)
-    current_project_set = [(p.name, p.type) for p in projects]
-    cached_project_set = [(p["name"], p["type"]) for p in build_cache.get("projects", [])]
+    current_project_set = [(p.name, p.type) for p in vs_projects]
+    cached_project_set = [
+        (p["name"], p["type"])
+        for p in build_cache.get("projects", [])
+        if p.get("type") not in EXCLUDED_PROJECT_TYPES
+    ]
     solution_needs_regen = force or current_project_set != cached_project_set
 
     if solution_needs_regen:
@@ -300,9 +311,7 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
         "projects": []
     }
 
-    for project in projects:
-        if project.type == "wasm":
-            continue
+    for project in vs_projects:
 
         print(f"Processing {project.type}/{project.name}...")
 
