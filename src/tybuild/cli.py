@@ -1,7 +1,7 @@
 import argparse
 import sys
 from pathlib import Path
-from tybuild.dependencies import get_cpp_dependencies
+from tybuild.dependencies import get_cpp_dependencies, fix_includes
 from tybuild.projects import discover_projects
 from tybuild.vs_templates import generate_project_guid, generate_solution, generate_project_from_template
 from tybuild.build import generate_build_files
@@ -125,6 +125,25 @@ def cmd_generate_cmake(args):
         sys.exit(2)
 
 
+def cmd_fix_includes(args):
+    """Fix includes to use source-root-relative paths."""
+    try:
+        src_root = Path.cwd() / 'src'
+        if not src_root.is_dir():
+            print("Error: No ./src directory found", file=sys.stderr)
+            sys.exit(1)
+
+        count = fix_includes(src_root)
+        if count:
+            print(f"Fixed includes in {count} file(s)")
+        else:
+            print("No includes needed fixing")
+
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='tybuild',
@@ -162,6 +181,10 @@ def main():
     # Generate CMake command
     parser_generate_cmake = subparsers.add_parser('generate-cmake', help='Generate CMake file with project information')
     parser_generate_cmake.set_defaults(func=cmd_generate_cmake)
+
+    # Fix includes command
+    parser_fix_includes = subparsers.add_parser('fix-includes', help='Fix includes to use source-root-relative paths')
+    parser_fix_includes.set_defaults(func=cmd_fix_includes)
 
     args = parser.parse_args()
 

@@ -22,7 +22,7 @@ CACHE_FILENAME = "includes.cache"
 
 
 class IncludeError(Exception):
-    """Raised when an include path is ambiguous due to file-relative resolution."""
+    """Raised when there is an error relating to include file resolution."""
     pass
 
 
@@ -101,7 +101,7 @@ def parse_includes(file_path: Path) -> List[str]:
     return includes
 
 
-def resolve_include(root: Path, includer: Path, include_str: str) -> Path | None:
+def resolve_include(root: Path, includer: Path, include_str: str) -> Path:
     """
     Resolve an include path relative to the source root.
 
@@ -110,6 +110,8 @@ def resolve_include(root: Path, includer: Path, include_str: str) -> Path | None
     relative to the includer's directory, that is reported as an error
     because the compiler would find that match first, bypassing the
     intended source-root-relative resolution.
+
+    Returns the resolved Path on success, or raises IncludeError.
     """
     root_resolved = root.resolve()
 
@@ -148,10 +150,10 @@ def resolve_include(root: Path, includer: Path, include_str: str) -> Path | None
     except (FileNotFoundError, OSError):
         pass
 
-    print(f"Warning: Could not resolve include '{include_str}' from '{posix_relpath(includer, root)}' "
-          f"(not found relative to source root '{root}')",
-          file=sys.stderr)
-    return None
+    raise IncludeError(
+        f"Could not resolve include '{include_str}' from '{posix_relpath(includer, root)}' "
+        f"(not found relative to source root '{root}')"
+    )
 
 
 def prune_cache_to_existing_files(cache: Cache, root: Path) -> None:
@@ -198,8 +200,7 @@ def scan(root: Path, cache_path: Path, refresh: bool = False) -> Cache:
                 print(f"Error: {e}", file=sys.stderr)
                 had_error = True
                 continue
-            if tgt and tgt.is_file():
-                resolved.append(posix_relpath(tgt, root))
+            resolved.append(posix_relpath(tgt, root))
 
         if not had_error:
             cache[rel] = {
@@ -358,3 +359,73 @@ def get_cpp_dependencies(repo_root: Path, start_file: Path, refresh: bool = Fals
         filtered_files.remove(start_rel)
 
     return sorted(filtered_files)
+
+
+def fix_includes(src_root: Path) -> int:
+    """
+    Fix includes that use file-relative paths to use source-root-relative paths.
+
+    For each source file in a subdirectory, if an #include "..." resolves
+    relative to the file's directory (but not via the source root path),
+    rewrite the include to use the source-root-relative path.
+
+    Returns the number of files modified.
+    """
+    src_root = src_root.resolve()
+    files = find_source_files(src_root)
+    files_modified = 0
+
+    for file_path in files:
+        file_path = file_path.resolve()
+        includer_dir = file_path.parent
+
+        # Only need to fix files in subdirectories
+        if includer_dir == src_root:
+            continue
+
+        lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines(True)
+        new_lines = []
+        changed = False
+
+        for line in lines:
+            m = INCLUDE_RE.match(line)
+            if m:
+                include_str = m.group(1).strip()
+                # Check if it resolves relative to the file's directory
+                relative_candidate = (includer_dir / include_str).resolve(strict=False)
+                try:
+                    relative_candidate = relative_candidate.resolve(strict=True)
+                    relative_candidate.relative_to(src_root)
+                except (FileNotFoundError, OSError, ValueError):
+                    new_lines.append(line)
+                    continue
+
+                # It resolves relative to file dir. Compute the source-root-relative path.
+                root_relative = posix_relpath(relative_candidate, src_root)
+
+                # Only fix if it's not already correct as a root-relative path
+                # (i.e., if it also resolves from root to the same file, it's fine)
+                root_candidate = (src_root / include_str).resolve(strict=False)
+                try:
+                    root_candidate = root_candidate.resolve(strict=True)
+                    if root_candidate == relative_candidate:
+                        # Both resolve to the same file — no ambiguity to fix
+                        new_lines.append(line)
+                        continue
+                except (FileNotFoundError, OSError):
+                    pass
+
+                # Rewrite the include
+                new_line = line[:m.start(1)] + root_relative + line[m.end(1):]
+                new_lines.append(new_line)
+                print(f"  {posix_relpath(file_path, src_root)}: "
+                      f'"{include_str}" -> "{root_relative}"')
+                changed = True
+            else:
+                new_lines.append(line)
+
+        if changed:
+            file_path.write_text("".join(new_lines), encoding="utf-8")
+            files_modified += 1
+
+    return files_modified
