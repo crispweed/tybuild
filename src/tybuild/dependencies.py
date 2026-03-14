@@ -21,6 +21,11 @@ SCAN_EXTS = {".cpp", ".h"}
 CACHE_FILENAME = "includes.cache"
 
 
+class IncludeError(Exception):
+    """Raised when an include path is ambiguous due to file-relative resolution."""
+    pass
+
+
 @dataclass(frozen=True)
 class FileIdentity:
     size: int
@@ -98,45 +103,53 @@ def parse_includes(file_path: Path) -> List[str]:
 
 def resolve_include(root: Path, includer: Path, include_str: str) -> Path | None:
     """
-    Resolve an include path, checking:
-    1. Relative to the includer file
-    2. Relative to the source root (if not found in step 1)
+    Resolve an include path relative to the source root.
+
+    All #include "..." paths must be relative to the source root.
+    For files in subdirectories, if the include string would resolve
+    relative to the includer's directory, that is reported as an error
+    because the compiler would find that match first, bypassing the
+    intended source-root-relative resolution.
     """
     root_resolved = root.resolve()
 
-    # Try 1: Relative to the includer file
-    candidate = (includer.parent / include_str).resolve(strict=False)
-    try:
-        candidate = candidate.resolve(strict=True)
-        # Check if it's within the root
+    # For files in subdirectories, check if the include would resolve
+    # relative to the includer's directory. If so, that's an error
+    # because the compiler searches relative to the file first.
+    includer_dir = includer.parent.resolve()
+    if includer_dir != root_resolved:
+        relative_candidate = (includer_dir / include_str).resolve(strict=False)
         try:
-            candidate.relative_to(root_resolved)
-            return candidate
-        except ValueError:
-            # Outside root, continue to try relative to root
-            pass
-    except FileNotFoundError:
-        # Not found relative to includer, continue to try relative to root
-        pass
+            relative_candidate = relative_candidate.resolve(strict=True)
+            try:
+                relative_candidate.relative_to(root_resolved)
+                # It exists relative to the file's directory — this is
+                # ambiguous because the compiler will find it before
+                # searching the source root include path.
+                raise IncludeError(
+                    f"Include '{include_str}' in '{posix_relpath(includer, root)}' "
+                    f"resolves relative to the file's directory. "
+                    f"Use a path relative to the source root instead."
+                )
+            except ValueError:
+                pass  # Outside root, not a concern
+        except (FileNotFoundError, OSError):
+            pass  # Doesn't exist relative to file dir, fine
 
-    # Try 2: Relative to the source root
+    # Resolve relative to the source root
     candidate = (root / include_str).resolve(strict=False)
     try:
         candidate = candidate.resolve(strict=True)
-        # Check if it's within the root
         try:
             candidate.relative_to(root_resolved)
             return candidate
         except ValueError:
-            # Outside root
             pass
-    except FileNotFoundError:
-        # Not found
+    except (FileNotFoundError, OSError):
         pass
 
-    # Both attempts failed
-    print(f"Warning: Could not resolve include '{include_str}' from '{includer}' "
-          f"(tried relative to file and relative to root '{root}')",
+    print(f"Warning: Could not resolve include '{include_str}' from '{posix_relpath(includer, root)}' "
+          f"(not found relative to source root '{root}')",
           file=sys.stderr)
     return None
 
@@ -177,16 +190,23 @@ def scan(root: Path, cache_path: Path, refresh: bool = False) -> Cache:
 
         raw_includes = parse_includes(p)
         resolved: List[str] = []
+        had_error = False
         for inc in raw_includes:
-            tgt = resolve_include(root, p, inc)
+            try:
+                tgt = resolve_include(root, p, inc)
+            except IncludeError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                had_error = True
+                continue
             if tgt and tgt.is_file():
                 resolved.append(posix_relpath(tgt, root))
 
-        cache[rel] = {
-            "size": ident.size,
-            "mtime_ns": ident.mtime_ns,
-            "includes": sorted(set(resolved)),
-        }
+        if not had_error:
+            cache[rel] = {
+                "size": ident.size,
+                "mtime_ns": ident.mtime_ns,
+                "includes": sorted(set(resolved)),
+            }
 
     save_cache(cache_path, cache)
     return cache
@@ -272,16 +292,23 @@ def ensure_file_in_cache(root: Path, cache: Cache, file_path: Path) -> str:
 
         raw_includes = parse_includes(file_path)
         resolved: List[str] = []
+        had_error = False
         for inc in raw_includes:
-            tgt = resolve_include(root, file_path, inc)
+            try:
+                tgt = resolve_include(root, file_path, inc)
+            except IncludeError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                had_error = True
+                continue
             if tgt and tgt.is_file():
                 resolved.append(posix_relpath(tgt, root))
 
-        cache[rel_path] = {
-            "size": file_path.stat().st_size,
-            "mtime_ns": file_path.stat().st_mtime_ns,
-            "includes": sorted(set(resolved)),
-        }
+        if not had_error:
+            cache[rel_path] = {
+                "size": file_path.stat().st_size,
+                "mtime_ns": file_path.stat().st_mtime_ns,
+                "includes": sorted(set(resolved)),
+            }
 
     return rel_path
 
