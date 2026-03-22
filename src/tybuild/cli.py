@@ -1,7 +1,10 @@
 import argparse
+import os
+import subprocess
 import sys
 from pathlib import Path
-from tybuild.dependencies import get_cpp_dependencies, fix_includes
+from tybuild.dependencies import get_cpp_dependencies, fix_includes, scan, build_dependency_graph, transitive_reachable, CACHE_FILENAME
+from tybuild.source_moves import run_source_files_moved
 from tybuild.projects import discover_projects
 from tybuild.vs_templates import generate_project_guid, generate_solution, generate_project_from_template
 from tybuild.build import generate_build_files
@@ -125,6 +128,71 @@ def cmd_generate_cmake(args):
         sys.exit(2)
 
 
+def cmd_source_files_moved(args):
+    """Detect moved/renamed source files and update includes."""
+    try:
+        repo_root = Path.cwd()
+        run_source_files_moved(repo_root, commit=args.commit, push=args.push)
+    except subprocess.CalledProcessError as e:
+        print(f"Git error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_orphaned(args):
+    """Find source files not referenced by any project."""
+    try:
+        repo_root = Path.cwd()
+        src_root = repo_root / 'src'
+
+        if not src_root.is_dir():
+            print("Error: No ./src directory found", file=sys.stderr)
+            sys.exit(1)
+
+        projects = discover_projects(repo_root)
+        if not projects:
+            print("No projects found in ./src/project", file=sys.stderr)
+            return
+
+        # Scan and build dependency graph (shared cache)
+        cache_path = repo_root / CACHE_FILENAME
+        cache = scan(src_root, cache_path, refresh=args.refresh)
+        dep_graph = build_dependency_graph(cache)
+
+        # Collect all files reachable from any project root
+        reachable = set()
+        for project in projects:
+            start_rel = project.cpp_file.relative_to(src_root).as_posix()
+            reachable.add(start_rel)
+            reachable.update(transitive_reachable(dep_graph, start_rel))
+
+        # Find all source files on disk
+        all_source_files = set()
+        source_exts = {'.cpp', '.h', '.hpp'}
+        for dirpath, _dirnames, filenames in os.walk(src_root):
+            for name in filenames:
+                p = Path(dirpath) / name
+                if p.suffix in source_exts:
+                    all_source_files.add(p.relative_to(src_root).as_posix())
+
+        # Orphaned = on disk but not reachable from any project
+        orphaned = sorted(all_source_files - reachable)
+
+        if orphaned:
+            print(f"Found {len(orphaned)} orphaned source file(s):")
+            print()
+            for f in orphaned:
+                print(f"  {f}")
+        else:
+            print("No orphaned source files found.")
+
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_fix_includes(args):
     """Fix includes to use source-root-relative paths."""
     try:
@@ -182,9 +250,24 @@ def main():
     parser_generate_cmake = subparsers.add_parser('generate-cmake', help='Generate CMake file with project information')
     parser_generate_cmake.set_defaults(func=cmd_generate_cmake)
 
+    # Orphaned source files command
+    parser_orphaned = subparsers.add_parser('orphaned', help='Find source files not referenced by any project')
+    parser_orphaned.add_argument('--refresh', action='store_true',
+                                help='Rebuild dependency cache from scratch')
+    parser_orphaned.set_defaults(func=cmd_orphaned)
+
     # Fix includes command
     parser_fix_includes = subparsers.add_parser('fix-includes', help='Fix includes to use source-root-relative paths')
     parser_fix_includes.set_defaults(func=cmd_fix_includes)
+
+    # Source files moved command
+    parser_moved = subparsers.add_parser('source-files-moved',
+                                         help='Detect moved/renamed files and update includes')
+    parser_moved.add_argument('--commit', action='store_true',
+                              help='Commit the changes to git')
+    parser_moved.add_argument('--push', action='store_true',
+                              help='Commit and push (implies --commit)')
+    parser_moved.set_defaults(func=cmd_source_files_moved)
 
     args = parser.parse_args()
 
