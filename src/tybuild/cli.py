@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from tybuild.dependencies import get_cpp_dependencies, fix_includes, scan, build_dependency_graph, transitive_reachable, CACHE_FILENAME
+from tybuild.dependencies import get_cpp_dependencies, fix_includes, scan, build_dependency_graph, transitive_reachable, find_include_chain, CACHE_FILENAME
 from tybuild.source_moves import run_source_files_moved
 from tybuild.projects import discover_projects
 from tybuild.vs_templates import generate_project_guid, generate_solution, generate_project_from_template
@@ -193,6 +193,51 @@ def cmd_orphaned(args):
         sys.exit(1)
 
 
+def cmd_show_include_chain(args):
+    """Show the chain of includes between two source files."""
+    try:
+        repo_root = Path.cwd()
+        src_root = repo_root / 'src'
+
+        if not src_root.is_dir():
+            print("Error: No ./src directory found", file=sys.stderr)
+            sys.exit(1)
+
+        from_file = (src_root / args.from_file).resolve()
+        to_file = (src_root / args.to_file).resolve()
+
+        if not from_file.is_file():
+            print(f"Error: File not found: {args.from_file}", file=sys.stderr)
+            sys.exit(1)
+        if not to_file.is_file():
+            print(f"Error: File not found: {args.to_file}", file=sys.stderr)
+            sys.exit(1)
+
+        cache_path = repo_root / CACHE_FILENAME
+        cache = scan(src_root, cache_path, refresh=args.refresh)
+        dep_graph = build_dependency_graph(cache)
+
+        from_rel = from_file.relative_to(src_root).as_posix()
+        to_rel = to_file.relative_to(src_root).as_posix()
+
+        chain = find_include_chain(dep_graph, from_rel, to_rel)
+
+        if chain is None:
+            print(f"No include chain found from {args.from_file} to {args.to_file}")
+            sys.exit(1)
+        else:
+            for i, step in enumerate(chain):
+                indent = "  " * i
+                print(f"{indent}{step}")
+
+    except (ValueError, FileNotFoundError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_fix_includes(args):
     """Fix includes to use source-root-relative paths."""
     try:
@@ -255,6 +300,14 @@ def main():
     parser_orphaned.add_argument('--refresh', action='store_true',
                                 help='Rebuild dependency cache from scratch')
     parser_orphaned.set_defaults(func=cmd_orphaned)
+
+    # Show include chain command
+    parser_chain = subparsers.add_parser('show-include-chain', help='Show the include chain between two source files')
+    parser_chain.add_argument('from_file', help='Starting source file (relative to src/)')
+    parser_chain.add_argument('to_file', help='Target source file (relative to src/)')
+    parser_chain.add_argument('--refresh', action='store_true',
+                              help='Rebuild dependency cache from scratch')
+    parser_chain.set_defaults(func=cmd_show_include_chain)
 
     # Fix includes command
     parser_fix_includes = subparsers.add_parser('fix-includes', help='Fix includes to use source-root-relative paths')

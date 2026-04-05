@@ -275,6 +275,35 @@ def transitive_reachable(graph: Dict[str, Set[str]], start_rel: str) -> Set[str]
     return visited
 
 
+def find_include_chain(graph: Dict[str, Set[str]], start_rel: str, end_rel: str) -> List[str] | None:
+    """
+    Find the shortest chain of includes from start_rel to end_rel using BFS.
+
+    Returns:
+        List of relative paths forming the chain (including start and end),
+        or None if no chain exists.
+    """
+    if start_rel == end_rel:
+        return [start_rel]
+
+    visited: Set[str] = {start_rel}
+    queue: deque[list[str]] = deque([[start_rel]])
+
+    while queue:
+        path = queue.popleft()
+        current = path[-1]
+        for neighbor in sorted(graph.get(current, ())):
+            if neighbor in visited:
+                continue
+            new_path = path + [neighbor]
+            if neighbor == end_rel:
+                return new_path
+            visited.add(neighbor)
+            queue.append(new_path)
+
+    return None
+
+
 def ensure_file_in_cache(root: Path, cache: Cache, file_path: Path) -> str:
     """
     Ensure a file is in the cache, adding it temporarily if needed.
