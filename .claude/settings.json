@@ -1,0 +1,16 @@
+{
+    "autoMemoryEnabled": false,
+    "permissions": {
+        "defaultMode": "default",
+        "allow": [
+            "Read",
+            "Grep",
+            "Glob",
+            "LS"
+        ],
+        "deny": [
+            "Bash",
+            "PowerShell"
+        ]
+    }
+}
