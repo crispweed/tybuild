@@ -27,10 +27,23 @@ from tybuild.vs_templates import (
     generate_project_guid,
     generate_solution,
     get_project_guid,
+    read_toolchain_settings,
 )
 
 CACHE_FILENAME = ".tybuild"
 EXCLUDED_PROJECT_TYPES = {"wasm"}
+PYTHON_PLACEHOLDER = "@TYBUILD_PYTHON@"
+
+# Project file that the toolchain settings are read out of. It is cmake output, it
+# is always present, and it is a Utility project like ONE_CHECK. See issue 2 in
+# KNOWN_ISSUES.md for why these are derived rather than written down.
+TOOLCHAIN_REFERENCE = "ZERO_CHECK.vcxproj"
+
+TOOLCHAIN_PLACEHOLDERS = {
+    "@TYBUILD_TOOLS_VERSION@": "tools_version",
+    "@TYBUILD_PLATFORM_TOOLSET@": "platform_toolset",
+    "@TYBUILD_WINDOWS_SDK@": "windows_sdk_version",
+}
 
 
 def _is_vs_project(project: Project) -> bool:
@@ -73,10 +86,52 @@ def _save_build_cache(cache_path: Path, cache: Dict[str, Any]) -> None:
         json.dump(cache, f, indent=2, sort_keys=True)
 
 
+def _render_builtin_template(content: str, toolchain: Dict[str, str]) -> str:
+    """
+    Substitute placeholders in a built-in (package) template.
+
+    Placeholders:
+        @TYBUILD_PYTHON@            Path to the interpreter running this command.
+        @TYBUILD_TOOLS_VERSION@     MSBuild ToolsVersion.
+        @TYBUILD_PLATFORM_TOOLSET@  Platform toolset, e.g. 'v145'.
+        @TYBUILD_WINDOWS_SDK@       Windows SDK version.
+
+    Every one of these is resolved at generate time rather than written into the
+    template, because a built-in template is the one file in the set that a
+    toolchain change does not otherwise reach.
+
+    The interpreter comes from sys.executable, so the regeneration step baked into
+    ONE_CHECK always runs under the same interpreter that generated it, on whatever
+    machine that happens to be. The substituted path is quoted in the template, so a
+    path containing spaces is fine.
+
+    The toolchain settings come from the cmake-generated templates, so ONE_CHECK
+    cannot disagree with the projects it is built alongside.
+
+    Args:
+        content: Raw template text
+        toolchain: Settings from vs_templates.read_toolchain_settings()
+    """
+    python = sys.executable
+    if not python:
+        raise RuntimeError(
+            "Unable to determine the path to the current Python interpreter, "
+            "which is needed for the build system check step. "
+            "Run tybuild from a normal Python installation or virtual environment."
+        )
+    content = content.replace(PYTHON_PLACEHOLDER, python)
+
+    for placeholder, key in TOOLCHAIN_PLACEHOLDERS.items():
+        content = content.replace(placeholder, toolchain[key])
+
+    return content
+
+
 def _copy_special_projects(
     template_dir: Path,
     build_dir: Path,
     cache: Dict[str, Any],
+    toolchain: Dict[str, str],
     force: bool = False
 ) -> Dict[str, Dict[str, int]]:
     """
@@ -87,6 +142,8 @@ def _copy_special_projects(
         template_dir: Directory containing template files
         build_dir: Target directory for build files
         cache: Build cache dictionary
+        toolchain: Settings from vs_templates.read_toolchain_settings(), substituted
+            into the built-in templates
         force: If True, copy all files regardless of cache
 
     Returns:
@@ -142,40 +199,37 @@ def _copy_special_projects(
             dst = build_dir / filename
             template_resource = templates_path.joinpath(filename)
 
-            # For package resources, we need to check by content or always copy
-            # Since we can't easily get mtime from package resources, we'll check
-            # if destination exists and compare sizes
+            # Substitute the placeholders before comparing, so that the comparison
+            # is against what will actually be written. A built-in template is a
+            # package resource with no useful mtime, so the destination file itself
+            # is the reference rather than a size recorded in the cache: an
+            # interpreter path can change without changing the file's length.
+            content = _render_builtin_template(
+                template_resource.read_text(encoding="utf-8"), toolchain
+            )
+
             needs_copy = force
             reason = "--force flag"
 
             if not needs_copy:
-                # Get the content to check size
-                template_content = template_resource.read_text(encoding="utf-8")
-                content_size = len(template_content.encode("utf-8"))
-
-                cached_identity = special_projects_cache.get(filename, {})
-                if cached_identity.get("size") != content_size:
-                    needs_copy = True
-                    reason = "content size changed"
-                elif not dst.exists():
+                if not dst.exists():
                     needs_copy = True
                     reason = "destination missing"
+                elif dst.read_text(encoding="utf-8") != content:
+                    needs_copy = True
+                    reason = "content changed"
 
-                if needs_copy:
-                    dst.write_text(template_content, encoding="utf-8")
-                    print(f"  Copied: {filename} (built-in, {reason})")
-                else:
-                    print(f"  Up to date: {filename} (built-in)")
-
-                # Store identity (size only for package resources)
-                new_identities[filename] = {"size": content_size, "mtime_ns": 0}
-            else:
-                # Force copy
-                template_content = template_resource.read_text(encoding="utf-8")
-                dst.write_text(template_content, encoding="utf-8")
+            if needs_copy:
+                dst.write_text(content, encoding="utf-8")
                 print(f"  Copied: {filename} (built-in, {reason})")
-                content_size = len(template_content.encode("utf-8"))
-                new_identities[filename] = {"size": content_size, "mtime_ns": 0}
+            else:
+                print(f"  Up to date: {filename} (built-in)")
+
+            # Store identity (size only for package resources)
+            new_identities[filename] = {
+                "size": len(content.encode("utf-8")),
+                "mtime_ns": 0,
+            }
 
         except Exception as e:
             print(f"  Warning: Failed to copy built-in template {filename}: {e}", file=sys.stderr)
@@ -232,9 +286,22 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
     cache_path = build_dir / CACHE_FILENAME
     build_cache = {} if force else _load_build_cache(cache_path)
 
+    # Read the toolchain settings that the cmake-generated templates were built for,
+    # so that the files tybuild writes itself cannot disagree with them
+    toolchain = read_toolchain_settings(template_dir / TOOLCHAIN_REFERENCE)
+    print(
+        f"Toolchain: {toolchain['platform_toolset']}, "
+        f"Windows SDK {toolchain['windows_sdk_version']}, "
+        f"MSBuild tools {toolchain['tools_version']} "
+        f"(from {TOOLCHAIN_REFERENCE})"
+    )
+    print()
+
     # Copy special CMake project files (only if changed)
     print("Copying special project files...")
-    special_projects_identities = _copy_special_projects(template_dir, build_dir, build_cache, force)
+    special_projects_identities = _copy_special_projects(
+        template_dir, build_dir, build_cache, toolchain, force
+    )
     print()
 
     # Discover projects
@@ -295,10 +362,20 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
         for p in build_cache.get("projects", [])
         if p.get("type") not in EXCLUDED_PROJECT_TYPES
     ]
-    solution_needs_regen = force or current_project_set != cached_project_set
+    # The solution header names the Visual Studio version, which is derived from the
+    # toolchain, so a toolchain change has to regenerate it as well as a project set
+    # change. Without this the solution would silently keep naming the old one.
+    toolchain_changed = build_cache.get("toolchain") != toolchain
+
+    solution_needs_regen = (
+        force or current_project_set != cached_project_set or toolchain_changed
+    )
 
     if solution_needs_regen:
-        print("Solution needs regeneration (project set changed or --force)")
+        if toolchain_changed and not force and current_project_set == cached_project_set:
+            print("Solution needs regeneration (toolchain changed)")
+        else:
+            print("Solution needs regeneration (project set changed or --force)")
     else:
         print("Solution up to date (project set unchanged)")
     print()
@@ -308,6 +385,7 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
     new_cache = {
         "solution_guid": solution_guid,
         "special_projects": special_projects_identities,
+        "toolchain": toolchain,
         "projects": []
     }
 
@@ -405,6 +483,7 @@ def generate_build_files(base_path: Optional[Path] = None, force: bool = False) 
             zero_check_guid=zero_check_guid,
             one_check_guid=one_check_guid,
             projects_to_add=projects_to_add,
+            tools_version=toolchain["tools_version"],
         )
         print(f"Generated solution: {sln_path}")
     else:

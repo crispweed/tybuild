@@ -22,19 +22,24 @@
 ├── dependencies.py     # C++ dependency scanning
 ├── vs_templates.py     # Visual Studio file generation
 ├── cmake_export.py     # CMake project export
-└── build.py            # Main build orchestration
+├── source_moves.py     # Updating includes after source files move
+├── build.py            # Main build orchestration
+└── templates/          # Templates shipped inside the package
+    └── ONE_CHECK.vcxproj   # Regeneration step; see "Meta-projects" below
 
 ./src/project/          # User's C++ projects (not in repo)
 └── <type>/             # Project type directories (console, sdl3, etc.)
     └── <Name>.cpp      # Each .cpp is a project entry point
 
-./build_template/       # Template VS project files (not in repo)
+./build_template/       # Template VS project files (not in repo, cmake output)
 ├── ZZZZZZZZ_<type>.vcxproj        # Templates for each project type
 ├── ZZZZZZZZ_<type>.vcxproj.filters
 ├── ALL_BUILD.vcxproj              # CMake-style meta-project
 ├── ALL_BUILD.vcxproj.filters
 ├── ZERO_CHECK.vcxproj             # CMake-style validation project
 └── ZERO_CHECK.vcxproj.filters
+                        # NOTE: ONE_CHECK is NOT here - it ships inside the
+                        # package, at ./src/tybuild/templates/
 
 ./build/                # Generated output (not in repo)
 ├── .tybuild            # Build cache (JSON) - deleted when build dir is cleaned
@@ -85,11 +90,18 @@
   - Replaces GUID (XML manipulation)
   - Replaces source file list (XML manipulation)
 
-- `generate_solution(output_sln_path, solution_guid, all_build_guid, zero_check_guid, projects_to_add)`
-  - Generates .sln with ALL_BUILD, ZERO_CHECK, and user projects
-  - ALL_BUILD depends on all projects
-  - User projects depend on ZERO_CHECK
+- `generate_solution(output_sln_path, solution_guid, all_build_guid, zero_check_guid, one_check_guid, projects_to_add)`
+  - Generates .sln with ALL_BUILD, ZERO_CHECK, ONE_CHECK, and user projects
+  - Dependency chain: ZERO_CHECK (first) → ONE_CHECK → user projects
+  - ALL_BUILD depends on all user projects, ONE_CHECK and ZERO_CHECK
   - Four configurations: Debug, Release, MinSizeRel, RelWithDebInfo (all x64)
+
+- `read_toolchain_settings(reference_vcxproj)` → `{tools_version, platform_toolset, windows_sdk_version}`
+  - Reads the toolchain out of a cmake-generated .vcxproj (in practice
+    `./build_template/ZERO_CHECK.vcxproj`), so the files tybuild writes itself cannot
+    disagree with the ones cmake wrote. See "Meta-Projects" below.
+  - Raises `RuntimeError` with a user-facing message if the file is missing, unreadable,
+    incomplete, or names more than one platform toolset
 
 **Important**: GUIDs are passed WITHOUT braces at API level, added internally for XML format
 
@@ -99,7 +111,8 @@
 **Key Function**: `generate_build_files(base_path, force=False)`
 
 **Workflow**:
-1. Copy ALL_BUILD and ZERO_CHECK files from template to build dir
+1. Copy ALL_BUILD and ZERO_CHECK from `./build_template/`, and ONE_CHECK from the
+   package's own `templates/` directory, to the build dir
 2. Discover all projects
 3. Load `.tybuild` cache
 4. For each project:
@@ -111,9 +124,13 @@
 5. Regenerate solution if project set changed
 6. Save updated cache
 
-**Hardcoded GUIDs**:
-- ALL_BUILD: `5C330799-6FA6-33C3-B12C-755A9CA12672`
-- ZERO_CHECK: `46BE4EB3-B0FD-3982-8000-AE0905052172`
+**Meta-project GUIDs**: not hardcoded in `build.py`. After the three meta-projects are
+copied into the build dir, their GUIDs are read back out of the copied files with
+`get_project_guid()`, so each one's GUID is whatever its template says. The values in
+practice are:
+- ALL_BUILD: `5C330799-6FA6-33C3-B12C-755A9CA12672` (from `./build_template/`)
+- ZERO_CHECK: `46BE4EB3-B0FD-3982-8000-AE0905052172` (from `./build_template/`)
+- ONE_CHECK: `1E71EEE3-975D-4B10-9620-A4C9F0B25EC9` (from the package template)
 
 ### 5. `cmake_export.py`
 **Purpose**: Export project information for CMake integration
@@ -150,6 +167,48 @@
 - "ZZZZZZZZ" chosen as unique prefix unlikely to appear naturally in project files
 - Simple string replacement used: `ZZZZZZZZ_<type>` → `<ProjectName>`
 
+### Meta-Projects: Where Each One Lives
+
+Three meta-projects end up in the solution, from two different places:
+
+- **ALL_BUILD** and **ZERO_CHECK** come from the consuming repository's
+  `./build_template/`, which is cmake output. A toolchain change reaches them by
+  deleting that directory and re-running cmake.
+- **ONE_CHECK** ships *inside this package*, at `./src/tybuild/templates/`, and is the
+  project that re-runs `tybuild generate` as a build step. Each user project depends on
+  it, and it depends on ZERO_CHECK.
+
+Because ONE_CHECK does not come from cmake, a toolchain change has no way of reaching it
+on its own. So it does not state a toolchain at all: `read_toolchain_settings()` reads
+`ToolsVersion`, `PlatformToolset` and `WindowsTargetPlatformVersion` out of
+`./build_template/ZERO_CHECK.vcxproj` (cmake output, always present, and a Utility project
+like ONE_CHECK) and substitutes them in at generate time. The solution header's Visual
+Studio version is derived from the same `ToolsVersion`.
+
+**Do not reintroduce a literal toolset, SDK or tools version anywhere in this package.**
+That drift is what `KNOWN_ISSUES.md` issue 2 was about, and it had already bitten twice
+before it was fixed.
+
+### Built-In Template Placeholders
+
+Templates under `./src/tybuild/templates/` are not copied verbatim: `_render_builtin_template()`
+in `build.py` substitutes placeholders first.
+
+- `@TYBUILD_PYTHON@` → `sys.executable`, the interpreter running `tybuild generate`.
+- `@TYBUILD_TOOLS_VERSION@` → MSBuild `ToolsVersion`, e.g. `18.0`.
+- `@TYBUILD_PLATFORM_TOOLSET@` → platform toolset, e.g. `v145`.
+- `@TYBUILD_WINDOWS_SDK@` → Windows SDK version, e.g. `10.0.26100.0`.
+
+The interpreter is resolved rather than configured, so the regeneration step baked into
+ONE_CHECK always runs under the same interpreter that generated it, whatever machine that
+is. The placeholder is quoted in the template, so interpreter paths containing spaces are
+fine. The last three come from `read_toolchain_settings()` — see above.
+
+Because a package resource has no useful mtime, and because an interpreter path can change
+without changing the file's length, these templates are compared against the **destination
+file's contents** to decide whether to rewrite — not against a size recorded in the cache.
+Add a placeholder here rather than an absolute path if you extend these templates.
+
 ### Incremental Build Strategy
 Projects regenerated ONLY when:
 1. Template file changes (detected by size + mtime_ns)
@@ -165,6 +224,11 @@ Projects regenerated ONLY when:
 ```json
 {
   "solution_guid": "...",
+  "toolchain": {
+    "tools_version": "18.0",
+    "platform_toolset": "v145",
+    "windows_sdk_version": "10.0.26100.0"
+  },
   "projects": [
     {
       "name": "ProjectName",
@@ -210,7 +274,6 @@ Generates `./generated_projects.cmake` with project information for CMake integr
 ## Testing Commands
 
 The CLI includes test commands for development:
-- `tybuild test-sln` - Test solution generation
 - `tybuild test-prj` - Test project generation from template
 
 ## Future Enhancements

@@ -9,3 +9,9 @@ requires-python = ">=3.6"
 
 [project.scripts]
 tybuild = "tybuild.cli:main"
+
+# ONE_CHECK.vcxproj is a data file, not a module, so it is not picked up by
+# package discovery. Without this it survives an editable install (which resolves
+# to the source tree) but is silently missing from a regular one.
+[tool.setuptools.package-data]
+tybuild = ["templates/*.vcxproj"]
