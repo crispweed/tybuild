@@ -72,12 +72,31 @@
   - Can filter to .cpp only or include .h files
   - Returns paths relative to `./src`
 
-**Include Resolution Strategy**:
-1. Try relative to including file's directory
-2. Try relative to source root (if step 1 fails)
-3. Warn if both fail
+**Include Resolution Strategy** (`resolve_include()`): every `#include "..."` must be written
+relative to the source root.
+1. If the include names a file relative to the including file's own directory (and the includer
+   is not directly in `./src`), that is error **TYB002**: the compiler would find that file first.
+   `tybuild fix-includes` rewrites these.
+2. Otherwise resolve it relative to the source root.
+3. If that names no file, that is error **TYB001**.
 
-**Caching**: Uses `./includes.cache` (in repository root) for performance (tracks file size + mtime_ns)
+**Include Errors**:
+- A file with include errors is still cached, with the includes that did resolve, so one bad
+  include doesn't drop the file's other dependencies. The failures go in the entry's `errors`
+  list (`line`, `code`, `message`).
+- A file whose entry has errors is rescanned on every `scan()`, so fixing it by adding or removing
+  some *other* file clears the error.
+- Nothing is printed during scanning. Callers collect errors afterwards with `include_errors()` or
+  `find_include_errors()` and print them with `report_include_errors()`, so each distinct error is
+  listed once per run however many projects reach it.
+- Format is MSVC's canonical error format, with an absolute path so MSBuild resolves it correctly
+  (ONE_CHECK runs `tybuild generate` as a custom build step, so these show up in Visual Studio's
+  Error List): `D:\repo\src\foo\Bar.cpp(12): error TYB001: cannot find include "x.h" ...`
+- The summary line after the list avoids the word "error", so MSBuild doesn't count it as another.
+
+**Caching**: Uses `./includes.cache` (in repository root) for performance (tracks file size + mtime_ns).
+Entries written before `errors` existed lack it; those versions never cached a file with an include
+error, so a missing `errors` means none, and the format needed no version bump.
 
 ### 3. `vs_templates.py`
 **Purpose**: Generates Visual Studio project and solution files
@@ -124,6 +143,9 @@
 5. Regenerate solution if project set changed
 6. Save updated cache
 
+`cmd_generate` then reports any include errors and exits 1 if there were any. Everything is
+generated first, so a Visual Studio user still gets a usable solution.
+
 **Meta-project GUIDs**: not hardcoded in `build.py`. After the three meta-projects are
 copied into the build dir, their GUIDs are read back out of the copied files with
 `get_project_guid()`, so each one's GUID is whatever its template says. The values in
@@ -147,7 +169,8 @@ practice are:
 **Purpose**: Command-line interface
 
 **Commands** (all run from repository root):
-- `tybuild generate [--force]` - Generate Visual Studio build files
+- `tybuild generate [--force]` - Generate Visual Studio build files (exits 1 on include errors)
+- `tybuild check-includes [--refresh]` - Report include errors and exit 1 if any, without touching the build directory
 - `tybuild list` - List discovered projects
 - `tybuild deps START [--refresh]` - Show dependencies for a file
 - `tybuild generate-cmake` - Generate CMake project list
@@ -256,7 +279,8 @@ Projects regenerated ONLY when:
 4. Run `tybuild generate`
 
 ### Debugging Dependency Issues
-- Check warnings from `resolve_include()` in stderr
+- Run `tybuild check-includes` to list `TYB001`/`TYB002` include errors (also printed by
+  `generate`, `deps`, `orphaned`, `show-include-chain` and `generate-cmake`)
 - Run `tybuild deps ./src/project/<type>/<Name>.cpp` to see what's being found (from repository root)
 - Use `--refresh` to rebuild dependency cache from scratch
 

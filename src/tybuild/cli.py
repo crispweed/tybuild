@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from tybuild.dependencies import get_cpp_dependencies, fix_includes, scan, build_dependency_graph, transitive_reachable, find_include_chain, CACHE_FILENAME
+from tybuild.dependencies import get_cpp_dependencies, fix_includes, scan, build_dependency_graph, transitive_reachable, find_include_chain, CACHE_FILENAME, find_include_errors, include_errors, report_include_errors
 from tybuild.source_moves import run_source_files_moved
 from tybuild.projects import discover_projects
 from tybuild.vs_templates import generate_project_guid, generate_solution, generate_project_from_template
@@ -20,6 +20,7 @@ def cmd_deps(args):
         start_file = Path(args.start).resolve()
 
         deps = get_cpp_dependencies(repo_root, start_file, refresh=args.refresh)
+        report_include_errors(find_include_errors(repo_root))
 
         for dep in deps:
             print(dep)
@@ -66,6 +67,15 @@ def cmd_generate(args):
         base_path = Path.cwd()
         generate_build_files(base_path, force=args.force)
 
+        # Everything that can be generated has been, so a Visual Studio user isn't left
+        # with a broken solution; but an include error means the projects may be
+        # missing sources, so fail
+        problems = find_include_errors(base_path)
+        if problems:
+            print()
+            report_include_errors(problems)
+            sys.exit(1)
+
     except (RuntimeError, FileNotFoundError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -74,6 +84,25 @@ def cmd_generate(args):
         import traceback
         traceback.print_exc()
         sys.exit(2)
+
+
+def cmd_check_includes(args):
+    """Report include errors, without touching the build directory."""
+    try:
+        repo_root = Path.cwd()
+        if not (repo_root / 'src').is_dir():
+            print("Error: No ./src directory found", file=sys.stderr)
+            sys.exit(1)
+
+        problems = find_include_errors(repo_root, refresh=args.refresh)
+        if problems:
+            report_include_errors(problems)
+            sys.exit(1)
+        print("No include errors found.")
+
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 def cmd_test_prj(args):
     """Test project generation from template."""
@@ -115,6 +144,7 @@ def cmd_generate_cmake(args):
         output_path = repo_root / 'generated_projects.cmake'
 
         generate_cmake_file(repo_root, output_path)
+        report_include_errors(find_include_errors(repo_root))
 
         print(f"Generated {output_path}")
 
@@ -159,6 +189,7 @@ def cmd_orphaned(args):
         # Scan and build dependency graph (shared cache)
         cache_path = repo_root / CACHE_FILENAME
         cache = scan(src_root, cache_path, refresh=args.refresh)
+        report_include_errors(include_errors(src_root, cache))
         dep_graph = build_dependency_graph(cache)
 
         # Collect all files reachable from any project root
@@ -215,6 +246,7 @@ def cmd_show_include_chain(args):
 
         cache_path = repo_root / CACHE_FILENAME
         cache = scan(src_root, cache_path, refresh=args.refresh)
+        report_include_errors(include_errors(src_root, cache))
         dep_graph = build_dependency_graph(cache)
 
         from_rel = from_file.relative_to(src_root).as_posix()
@@ -286,6 +318,13 @@ def main():
     parser_generate.add_argument('--force', action='store_true',
                                 help='Force regeneration of all files, ignoring cache')
     parser_generate.set_defaults(func=cmd_generate)
+
+    # Check includes command
+    parser_check_includes = subparsers.add_parser('check-includes',
+                                                  help='Report include errors, without generating build files')
+    parser_check_includes.add_argument('--refresh', action='store_true',
+                                       help='Rebuild dependency cache from scratch')
+    parser_check_includes.set_defaults(func=cmd_check_includes)
 
     # Test project generation command
     parser_test_prj = subparsers.add_parser('test-prj', help='Test project generation from template')

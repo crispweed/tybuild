@@ -6,6 +6,13 @@
   <PropertyGroup>
     <ResolveNugetPackages>false</ResolveNugetPackages>
   </PropertyGroup>
+  <PropertyGroup>
+    <!-- The custom build step's input is a placeholder that doesn't exist, and its output
+         is never created so that the step runs on every build. MSB8064 (input missing)
+         and MSB8065 (output not created) warn about exactly that, so show them as
+         messages instead. This only affects ONE_CHECK. -->
+    <MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB8064;MSB8065</MSBuildWarningsAsMessages>
+  </PropertyGroup>
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
       <Configuration>Debug</Configuration>
@@ -120,8 +127,7 @@ if %errorlevel% neq 0 goto :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
 :cmErrorLevel
 exit /b %1
-:cmDone
-if %errorlevel% neq 0 goto :VCEnd</Command>
+:cmDone</Command>
       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NonExistantFile.txt</Outputs>
       <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
       <BuildInParallel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</BuildInParallel>
@@ -134,8 +140,7 @@ if %errorlevel% neq 0 goto :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
 :cmErrorLevel
 exit /b %1
-:cmDone
-if %errorlevel% neq 0 goto :VCEnd</Command>
+:cmDone</Command>
       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NonExistantFile.txt</Outputs>
       <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
       <BuildInParallel Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">true</BuildInParallel>
@@ -148,8 +153,7 @@ if %errorlevel% neq 0 goto :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
 :cmErrorLevel
 exit /b %1
-:cmDone
-if %errorlevel% neq 0 goto :VCEnd</Command>
+:cmDone</Command>
       <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">NonExistantFile.txt</Outputs>
       <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
       <BuildInParallel Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</BuildInParallel>
@@ -162,8 +166,7 @@ if %errorlevel% neq 0 goto :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
 :cmErrorLevel
 exit /b %1
-:cmDone
-if %errorlevel% neq 0 goto :VCEnd</Command>
+:cmDone</Command>
       <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">NonExistantFile.txt</Outputs>
       <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
     </CustomBuild>
