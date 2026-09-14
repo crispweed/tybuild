@@ -124,7 +124,9 @@ def generate_solution(
     # generated for, rather than being written down separately and drifting from it.
     vs_major_version = tools_version.split(".")[0]
 
-    lines.append("\ufeff")  # UTF-8 BOM
+    # Visual Studio's own solution files start with a blank line. The BOM before it
+    # comes from the 'utf-8-sig' encoding the file is written with.
+    lines.append("")
     lines.append("Microsoft Visual Studio Solution File, Format Version 12.00")
     lines.append(f"# Visual Studio Version {vs_major_version}")
 
@@ -444,6 +446,36 @@ def _remove_custom_build_in_vcxproj(xml_text: str) -> str:
             ig.remove(cb)
         # Remove ItemGroup if it's now empty
         if len(ig) == 0:
+            root.remove(ig)
+
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
+
+
+def remove_project_references_in_vcxproj(xml_text: str) -> str:
+    """
+    Remove all ProjectReference entries from a vcxproj file.
+
+    cmake's ALL_BUILD references the projects in ./build_template/ (ZERO_CHECK and the
+    ZZZZZZZZ_<type> dummies), so building the copy in ./build/ would also build those.
+    In the generated solution, ALL_BUILD gets its dependencies from the solution
+    instead.
+
+    Args:
+        xml_text: The vcxproj file content as XML string
+
+    Returns:
+        Updated XML text with ProjectReference elements removed
+    """
+    root = ET.fromstring(xml_text)
+    ns = _detect_ns(root)
+    ET.register_namespace("", ns)
+
+    for ig in list(root.findall(_ns_tag(ns, "ItemGroup"))):
+        refs = ig.findall(_ns_tag(ns, "ProjectReference"))
+        for ref in refs:
+            ig.remove(ref)
+        # Remove the ItemGroup if it only held references
+        if refs and len(ig) == 0:
             root.remove(ig)
 
     return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")

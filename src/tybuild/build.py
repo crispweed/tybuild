@@ -28,6 +28,7 @@ from tybuild.vs_templates import (
     generate_solution,
     get_project_guid,
     read_toolchain_settings,
+    remove_project_references_in_vcxproj,
 )
 
 CACHE_FILENAME = ".tybuild"
@@ -38,6 +39,11 @@ PYTHON_PLACEHOLDER = "@TYBUILD_PYTHON@"
 # is always present, and it is a Utility project like ONE_CHECK. See issue 2 in
 # KNOWN_ISSUES.md for why these are derived rather than written down.
 TOOLCHAIN_REFERENCE = "ZERO_CHECK.vcxproj"
+
+# Changes made to cmake-generated files as they are copied into the build directory
+USER_TEMPLATE_TRANSFORMS = {
+    "ALL_BUILD.vcxproj": remove_project_references_in_vcxproj,
+}
 
 TOOLCHAIN_PLACEHOLDERS = {
     "@TYBUILD_TOOLS_VERSION@": "tools_version",
@@ -168,6 +174,11 @@ def _copy_special_projects(
             print(f"  Warning: Template file not found: {filename}", file=sys.stderr)
             continue
 
+        transform = USER_TEMPLATE_TRANSFORMS.get(filename)
+        content = None
+        if transform is not None:
+            content = transform(src.read_text(encoding="utf-8-sig"))
+
         # Check if we need to copy
         needs_copy = force
         reason = "--force flag"
@@ -180,9 +191,16 @@ def _copy_special_projects(
             elif not dst.exists():
                 needs_copy = True
                 reason = "destination missing"
+            elif content is not None and dst.read_text(encoding="utf-8") != content:
+                # Also catches a copy made before the transform existed
+                needs_copy = True
+                reason = "content changed"
 
         if needs_copy:
-            shutil.copy2(src, dst)
+            if content is None:
+                shutil.copy2(src, dst)
+            else:
+                dst.write_text(content, encoding="utf-8")
             print(f"  Copied: {filename} ({reason})")
         else:
             print(f"  Up to date: {filename}")

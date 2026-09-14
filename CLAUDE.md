@@ -131,7 +131,9 @@ error, so a missing `errors` means none, and the format needed no version bump.
 
 **Workflow**:
 1. Copy ALL_BUILD and ZERO_CHECK from `./build_template/`, and ONE_CHECK from the
-   package's own `templates/` directory, to the build dir
+   package's own `templates/` directory, to the build dir. ALL_BUILD's `ProjectReference`s
+   are removed on the way (`USER_TEMPLATE_TRANSFORMS`): they point at the projects in
+   `./build_template/`, and ALL_BUILD gets its dependencies from the solution instead
 2. Discover all projects
 3. Load `.tybuild` cache
 4. For each project:
