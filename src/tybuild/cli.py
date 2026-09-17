@@ -9,8 +9,7 @@ from tybuild.projects import discover_projects
 from tybuild.vs_templates import generate_project_guid, generate_solution, generate_project_from_template
 from tybuild.build import generate_build_files
 from tybuild.cmake_export import generate_cmake_file
-
-# from tybuild.clean import Clean
+from tybuild.native_build import run_build
 
 
 def cmd_deps(args):
@@ -34,11 +33,25 @@ def cmd_deps(args):
 
 
 def cmd_build(args):
-    """Build the specified target."""
-    print("not implemented yet")
-    # if args.clean:
-    #     Clean()
-    # RunBuild(args.target)
+    """Build all projects directly, compiling each shared source once."""
+    try:
+        exit_code = run_build(
+            Path.cwd(),
+            dry_run=args.dry_run,
+            allow_differing_compile_commands=args.allow_differing_compile_commands,
+            refresh_commands=args.refresh_commands,
+            jobs=args.jobs,
+        )
+        sys.exit(exit_code)
+
+    except (RuntimeError, FileNotFoundError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        sys.exit(2)
 
 
 def cmd_list(args):
@@ -297,9 +310,16 @@ def main():
     subparsers = parser.add_subparsers(dest='command', help='Commands')
 
     # Build command
-    parser_build = subparsers.add_parser('build', help='Build a target')
-    parser_build.add_argument('target', help='What to build')
-    parser_build.add_argument('--clean', action='store_true', help='Clean before building')
+    parser_build = subparsers.add_parser('build',
+                                         help='Build all projects (Debug|x64) directly, compiling each shared source once')
+    parser_build.add_argument('--dry-run', action='store_true',
+                              help='Extract and show the compile and link commands and count the objects needed, without compiling')
+    parser_build.add_argument('--allow-differing-compile-commands', action='store_true',
+                              help='Go ahead when project types have different compile commands (sources they share are then compiled once per type)')
+    parser_build.add_argument('--refresh-commands', action='store_true',
+                              help='Re-extract the compile and link commands, even if the templates have not changed')
+    parser_build.add_argument('-j', '--jobs', type=int, default=None,
+                              help='Number of compile/link processes to run at once (default: processor count)')
     parser_build.set_defaults(func=cmd_build)
 
     # Dependencies command

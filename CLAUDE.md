@@ -176,9 +176,43 @@ practice are:
 - `tybuild list` - List discovered projects
 - `tybuild deps START [--refresh]` - Show dependencies for a file
 - `tybuild generate-cmake` - Generate CMake project list
-- `tybuild build TARGET [--clean]` - (Not implemented yet)
+- `tybuild build [--dry-run] [--allow-differing-compile-commands] [--refresh-commands] [-j N]` -
+  Build Debug|x64 directly with cl/link, each shared object compiled once; executables in
+  `./build_tybuild/Debug/bin/`. `--dry-run` shows the extracted commands and object counts
+  without compiling. Not incremental yet; see "`tybuild build`" below
 
 **Important**: All commands assume they are run from the repository root directory, which must contain a `./src` subdirectory. The `--root` parameter has been removed from all commands.
+
+### 7. `tybuild build` (`native_build.py`, `command_templates.py`, `vs_install.py`) — in progress
+**Purpose**: Build Debug|x64 directly with cl/link, compiling each shared source once
+(plan: `TASK_BUILD_COMMAND.md`). Output under `./build_tybuild/Debug/`, cache in
+`./build_tybuild/Debug/.tybuild`.
+
+- Command templates: a copy of each `ZZZZZZZZ_<type>.vcxproj` is built with MSBuild (found via
+  vswhere, restricted to the Visual Studio major named by `ToolsVersion`) in
+  `build_tybuild/Debug/extract/<type>/`, with `IntDir`/`OutDir` overridden to there. The copy has
+  its sources replaced by a stub defining `main` and `WinMain` (lockstep's `DummySource.cpp` has no
+  entry point, so the template itself doesn't link), and its ProjectReferences, CustomBuild steps
+  and build events removed (otherwise MSBuild evaluates ZERO_CHECK with the overridden `IntDir`, and
+  the post-build `vcpkg z-applocal` targets an absolute path in `build_template/Debug/`). `CL.command.*.tlog` and
+  `link.command.*.tlog` are read back, and the per-file/per-project parts (`/Fo`, `/Fd`, source;
+  `/OUT`, `/ILK`, `/PDB`, `/IMPLIB`, objects) removed. Anything left that mentions the extraction
+  directories is an error. Re-extracted when the template's identity or the toolchain changes.
+- Tokens are kept raw (quoting as recorded) and passed on unchanged.
+- One deliberate deviation: `/Zi` → `/Z7` (no shared PDB between parallel `cl` processes).
+- Differing compile switches between types are `error TYB101` (one line per switch, located at a
+  template), or warnings with `--allow-differing-compile-commands`. Objects are keyed by source
+  plus `compile_command_id()`, never by source alone. A difference stops the build before compiling.
+- Environment: `vcvarsall.bat x64 <sdk>` from the same installation, captured by running
+  `sys.executable` after it, cached in `.tybuild` by toolchain. `find_compiler()` checks that
+  `VCToolsVersion` matches the toolset (`vNM` → `N.M*`), that `cl` is under `VCToolsInstallDir`,
+  and that `WindowsSDKVersion` matches.
+- Layout under `build_tybuild/Debug/`: `obj/<command id>/<src path>.obj`, `bin/<Project>.exe|pdb|ilk`,
+  `link/<Project>.rsp|lib`. cl and link run with the template directory as working directory.
+- Compiles run in a thread pool (one `cl` per source, processor count), every object attempted,
+  each process's output printed whole. Then projects whose objects all compiled are linked, via
+  UTF-16 response files. The templates' `vcpkg z-applocal` post-build step is deliberately not run
+  (static triplet, no DLLs).
 
 ## Important Design Decisions
 
