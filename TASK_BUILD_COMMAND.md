@@ -1,5 +1,9 @@
 # Task: `tybuild build` — compile each shared object once
 
+**Status: done in tybuild, 2026-09-17.** Steps 1 to 4 below are implemented and were checked against
+lockstep; see "Outcome" at the end for what differed from this plan, and for the follow-up that
+belongs to the lockstep repo. `CLAUDE.md` (module 7) is the reference for how it works now.
+
 Written 2026-09-17 from the lockstep repo, after looking at how that repo builds. This is a task
 description to start from, not a design to follow to the letter: where it says "lean", that is a
 recommendation, and the session doing the work should push back if the code says otherwise.
@@ -162,3 +166,55 @@ The user builds and tests; hand over commands to run rather than assuming they h
 
 - Whether, longer term, Visual Studio builds should also benefit (for example through generated
   static libraries per type). Out of scope here, where the check script is the user.
+
+## Outcome (2026-09-17)
+
+### Checked against lockstep
+
+- `tybuild build --dry-run`: both types (console, sdl3) extracted cleanly, with exactly one compile
+  and one link recorded each and nothing left unsubstituted. Compile commands identical across
+  types, so one command set. 13 projects: 659 per-project compiles, 233 distinct sources, 233
+  distinct objects (the 644 / 227 above predate some source changes).
+- Compiler environment: vcvarsall set up MSVC 14.51.36231 (the only one installed), matching v145
+  and SDK 10.0.26100.0.
+- Clean build: 233 objects compiled in 30.8s, 13 projects linked in 2.6s, 33.9s total, 12 processes.
+  All projects linked, and `Tests.exe` passed.
+- Incremental: an unchanged rebuild compiles and links nothing. Touching a .cpp, touching a widely
+  included header, introducing and reverting a compile error, and killing a build part way all
+  behaved as intended. Ctrl+C stops the build within a second.
+
+### Where the implementation differs from the plan
+
+- **The dummy templates are not built as they are.** A copy is built instead, in
+  `build_tybuild/Debug/extract/<type>/`: lockstep's `DummySource.cpp` has no `main`, so the
+  template doesn't link; MSBuild evaluates the referenced ZERO_CHECK with the overridden `IntDir`
+  even with `BuildProjectReferences=false`; and the post-build `vcpkg z-applocal` names the
+  executable by an absolute path in `build_template/Debug/`. The copy compiles a stub with `main`
+  and `WinMain`, without project references, cmake's check or build events. None of those affect
+  the extracted switches. Nothing needs changing on the lockstep side for this.
+- **Differing compile commands stop the build before compiling**, rather than compiling and then
+  failing. `--allow-differing-compile-commands` builds anyway, reporting warnings.
+- **Output location** is fixed: executables in `build_tybuild/Debug/bin/`.
+- A project that isn't linked, because some of its objects failed or its link failed, has its
+  executable **deleted**, so a script can't run a stale one.
+- Added `-j N` and `--refresh-commands`.
+
+### Follow-up for the lockstep repo (not done here)
+
+1. `scripts/check.py` and `scripts/run_integration_tests.py` look for executables in
+   `build_template/Debug/`. Switching the check script's build stage to `tybuild build` means
+   pointing both at `build_tybuild/Debug/bin/`.
+2. The check script's build stage runs `tybuild build` from the repository root in place of MSBuild
+   on `build/Solution.sln`, and takes the exit code as pass/fail. `tybuild generate` is then not
+   needed for the check (it still is for Visual Studio).
+3. It should not pass `--allow-differing-compile-commands` by default. Its build stage extract
+   should show `error TYB101` lines, which name the differing switch and the types that have it:
+   `...\ZZZZZZZZ_console.vcxproj(1): error TYB101: compile command differs between project types:
+   /D RTC_STATIC: console only`.
+4. The check script's de-duplication of errors repeated across projects is no longer needed, since
+   each object is compiled once; it's harmless to keep while MSBuild remains an option.
+5. Diagnostics keep MSVC's `file(line,col): error Cxxxx:` format. Summary lines avoid the word
+   "error" (`BUILD FAILED: N object(s) did not compile, M link(s) did not succeed`), but tybuild's
+   own notes about a tool that fails silently are prefixed `tybuild:`.
+6. `build_tybuild/` should be added to lockstep's `.gitignore`.
+7. The time budget in `BUILD_ISSUES.md` can be revisited with the numbers above.

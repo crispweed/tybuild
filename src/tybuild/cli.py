@@ -44,6 +44,9 @@ def cmd_build(args):
         )
         sys.exit(exit_code)
 
+    except KeyboardInterrupt:
+        print("Build interrupted. Whatever didn't finish will be built by the next build.", file=sys.stderr)
+        sys.exit(1)
     except (RuntimeError, FileNotFoundError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
