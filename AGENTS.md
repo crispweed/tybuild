@@ -51,6 +51,7 @@
 └── <ProjectName>.vcxproj.filters
 
 ./build_tybuild/Debug/  # `tybuild build` output (not in repo); see module 7 below
+./build_tybuild/Release/  # the same, for `tybuild build --config Release`
 
 ./includes.cache        # Dependency cache (JSON, in repository root)
 ```
@@ -181,16 +182,19 @@ practice are:
 - `tybuild list` - List discovered projects
 - `tybuild deps START [--refresh]` - Show dependencies for a file
 - `tybuild generate-cmake` - Generate CMake project list
-- `tybuild build [--dry-run] [--allow-differing-compile-commands] [--refresh-commands] [-j N]` -
-  Build Debug|x64 directly with cl/link, each shared object compiled once; executables in
-  `./build_tybuild/Debug/bin/`, incremental. `--dry-run` shows the extracted commands and object
-  counts without compiling. See "`tybuild build`" below
+- `tybuild build [--config Debug|Release] [--project NAME ...] [--dry-run]
+  [--allow-differing-compile-commands] [--refresh-commands] [-j N]` -
+  Build directly with cl/link, each shared object compiled once; executables in
+  `./build_tybuild/<config>/bin/`, incremental. `--config` defaults to Debug (x64 either way).
+  `--project NAME`, repeatable, builds only the named projects and the objects they need.
+  `--dry-run` shows the extracted commands and object counts without compiling. See
+  "`tybuild build`" below
 
 **Important**: All commands assume they are run from the repository root directory, which must contain a `./src` subdirectory. The `--root` parameter has been removed from all commands.
 
 ### 7. `tybuild build`: `native_build.py`, `command_templates.py`, `vs_install.py`
-**Purpose**: Build every project (Debug|x64 only) directly with `cl` and `link`, compiling each
-shared source once and linking the object into every project that needs it. An alternative to
+**Purpose**: Build projects (Debug|x64 by default, or Release|x64) directly with `cl` and `link`,
+compiling each shared source once and linking the object into every project that needs it. An alternative to
 building `./build/Solution.sln` with MSBuild, for scripts (first user: lockstep's `scripts/check.py`).
 Visual Studio through `tybuild generate` stays the day to day workflow and is unaffected.
 
@@ -198,25 +202,40 @@ Background and the original plan: `TASK_BUILD_COMMAND.md`. On lockstep (13 proje
 per-project compiles become 233 objects, and a clean build took 34s (12 processes), where lockstep's
 `BUILD_ISSUES.md` reports about 3 minutes through MSBuild (not measured side by side).
 
-**Output** (fixed, documented path, so other scripts can name it):
+**Output** (fixed, documented path, so other scripts can name it), one directory per
+configuration, `Debug` or `Release`:
 ```
-./build_tybuild/Debug/
+./build_tybuild/<config>/
 ├── .tybuild                            # cache: extracted command templates, compiler environment
 ├── extract/<type>/                     # where each type's commands were extracted
 ├── obj/<command id>/<src path>.obj     # objects, by path under ./src (not base name)
 ├── obj/.../<src path>.obj.record.json  # what the object was compiled from
-├── bin/<Project>.exe, .pdb, .ilk       # executables
+├── bin/<Project>.exe, .pdb, .ilk       # executables (.pdb/.ilk if the extracted link makes them)
 └── link/<Project>.rsp, .lib, .record.json
 ```
-Separate from `./build_template/Debug/`, where Visual Studio puts executables, so the two builds
+Separate from `./build_template/<config>/`, where Visual Studio puts executables, so the two builds
 don't overwrite each other's executables, PDBs and incremental link state.
 
+**Configurations** (`--config`, `CONFIGURATIONS` in `command_templates.py`): Debug (the default)
+and Release. The configuration is only the extraction build's `/p:Configuration=` and the output
+directory; everything else follows from the extracted commands. Each configuration's directory is
+self-contained, cache included, so the two never share templates, environment, objects or records,
+and a build of one leaves the other's untouched and still up to date. The cmake templates also have
+MinSizeRel and RelWithDebInfo, not tried; adding them should be a matter of extending
+`CONFIGURATIONS`.
+
+**Project selection** (`--project NAME`, repeatable; `_select_projects()`): only the named
+projects are planned, compiled and linked. A name that isn't a buildable project is an error
+listing those that are. Command templates are still got, and compile commands compared, for
+*every* project type, and include errors still reported for every source, so a partial build fails
+wherever a full one would; the templates are cached, so this costs little after the first run.
+
 **Flow** (`run_build()` in `native_build.py`):
-1. `read_toolchain_settings()`, discover projects (excluding `wasm`)
-2. Get command templates per project type (`get_type_templates()`, cached)
+1. `read_toolchain_settings()`, discover projects (excluding `wasm`), select those named
+2. Get command templates per project type (`get_type_templates()`, cached), for every type
 3. Compare compile commands across types (`compare_compile_commands()`)
 4. Get the compiler environment (cached)
-5. Plan objects: for each project, main cpp + `get_cpp_dependencies()`, keyed by
+5. Plan objects: for each selected project, main cpp + `get_cpp_dependencies()`, keyed by
    `(source, compile_command_id)`
 6. `--dry-run` stops here, after printing the commands and counts
 7. Compile out of date objects in parallel, then link out of date projects in parallel
@@ -232,19 +251,25 @@ change here, in the same spirit as `read_toolchain_settings()`:
   - ProjectReferences removed: even with `BuildProjectReferences=false`, MSBuild evaluates
     ZERO_CHECK with the overridden `IntDir` (warning MSB8028).
   - CustomBuild steps (cmake's check) and build events removed: the post-build
-    `vcpkg z-applocal` names the executable by an absolute path in `build_template/Debug/`.
+    `vcpkg z-applocal` names the executable by an absolute path in `build_template/<config>/`.
 - `CL.command.*.tlog` and `link.command.*.tlog` (UTF-16, a `^inputs` line then the command) are
   read back. Exactly one compile and one link are expected.
 - Per-file/per-project parts are removed: `/Fo`, `/Fd` and the source for `cl`; `/OUT`, `/ILK`,
   `/PDB`, `/IMPLIB`, `/MANIFESTFILE`, `/PGD` and the `.obj` inputs for `link`. Anything left that
   mentions the extraction directory is an error, so an unknown per-project part fails loudly.
+  Which link outputs the recorded command had is kept (`link_outputs`), and `/ILK`, `/PDB` and
+  `/IMPLIB` are given tybuild's paths only if it had them (a Release link has no incremental link
+  state); `/OUT` always is.
 - Tokens are kept raw, with their quoting as recorded (`/D "CMAKE_INTDIR=\"Debug\""`), and passed
   on unchanged. Switches taking a separate argument (`/D X`, `/external:I X`) are kept as pairs.
 - Cached in `.tybuild` under `command_templates`, re-extracted when a template's size/mtime or the
-  toolchain changes, or with `--refresh-commands`.
+  toolchain changes, or with `--refresh-commands`. A cache from before `link_outputs` existed is
+  unreadable to the current code, so is extracted again once.
 - **The one deliberate deviation**: `/Zi` → `/Z7`. `/Zi` writes a per-project PDB, which parallel
   `cl` processes would have to share through `/FS` and `mspdbsrv`. With `/Z7` each object carries
-  its debug information, and the linker still writes the executable's PDB.
+  its debug information, and the linker still writes the executable's PDB. cmake's Release flags
+  normally ask for no debug information, so there it usually has nothing to do; if they do, it
+  applies the same way.
 
 **Differing compile commands** are a build failure: otherwise a change could silently bring back
 compiling every shared source once per type, and the only symptom would be a slower build.
@@ -295,8 +320,8 @@ compiling every shared source once per type, and the only symptom would be a slo
 - A project not linked because objects failed, or whose link failed, has its executable deleted,
   so a stale executable can't be run by mistake.
 
-**Known gaps**: no Release configurations. Objects and executables no longer needed (a removed
-source or project) aren't cleaned up. A change to the environment other than the toolchain isn't
+**Known gaps**: only Debug and Release (not MinSizeRel or RelWithDebInfo). Objects and executables
+no longer needed (a removed source or project) aren't cleaned up. A change to the environment other than the toolchain isn't
 noticed, since the environment is cached. `get_cpp_dependencies()` is called once per project, as
 `generate` does.
 
@@ -364,7 +389,7 @@ Projects regenerated ONLY when:
 ### Cache Locations
 - **Build cache** (`./build/.tybuild`): Stores Visual Studio project generation state. Deleted when user cleans the build directory.
 - **Dependency cache** (`./includes.cache`): Stores C++ include dependency scan results. Persists in repository root across build cleanups.
-- **`tybuild build` cache** (`./build_tybuild/Debug/.tybuild`, plus per-object and per-project
+- **`tybuild build` cache** (`./build_tybuild/<config>/.tybuild`, plus per-object and per-project
   `.record.json` files): command templates, compiler environment, and what each output was built
   from. Separate from `./build/.tybuild`; deleting `./build_tybuild/` forces a full rebuild.
 
@@ -418,6 +443,7 @@ tybuild generate --force
 ```bash
 tybuild build --dry-run   # show the extracted commands and object counts
 tybuild build             # build; executables in ./build_tybuild/Debug/bin/
+tybuild build --config Release --project Server   # one project, Release, into ./build_tybuild/Release/bin/
 ```
 Exits 1 on compile/link failures, include errors, or differing compile commands between types.
 Delete `./build_tybuild/` for a clean build.
@@ -436,7 +462,8 @@ The CLI includes test commands for development:
 ## Future Enhancements
 
 Areas marked for future work:
-- `tybuild build`: Release configurations; cleaning up objects and executables no longer needed
+- `tybuild build`: cleaning up objects and executables no longer needed; MinSizeRel and
+  RelWithDebInfo, if wanted
 - Whether Visual Studio builds should also compile shared sources once (e.g. static libraries
   per type); out of scope for `tybuild build`
 - `tybuild clean` command

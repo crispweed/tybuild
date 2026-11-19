@@ -10,6 +10,7 @@ from tybuild.vs_templates import generate_project_guid, generate_solution, gener
 from tybuild.build import generate_build_files
 from tybuild.cmake_export import generate_cmake_file
 from tybuild.native_build import run_build
+from tybuild.command_templates import CONFIGURATIONS, DEFAULT_CONFIGURATION
 
 
 def cmd_deps(args):
@@ -41,6 +42,8 @@ def cmd_build(args):
             allow_differing_compile_commands=args.allow_differing_compile_commands,
             refresh_commands=args.refresh_commands,
             jobs=args.jobs,
+            configuration=args.config,
+            project_names=args.project,
         )
         sys.exit(exit_code)
 
@@ -314,7 +317,11 @@ def main():
 
     # Build command
     parser_build = subparsers.add_parser('build',
-                                         help='Build all projects (Debug|x64) directly, compiling each shared source once')
+                                         help='Build projects (Debug|x64 or Release|x64) directly, compiling each shared source once')
+    parser_build.add_argument('--config', choices=CONFIGURATIONS, default=DEFAULT_CONFIGURATION,
+                              help=f'Configuration to build, into ./build_tybuild/<config>/ (default: {DEFAULT_CONFIGURATION})')
+    parser_build.add_argument('--project', action='append', metavar='NAME',
+                              help='Build only this project and the objects it needs; repeat for more than one (default: all projects)')
     parser_build.add_argument('--dry-run', action='store_true',
                               help='Extract and show the compile and link commands and count the objects needed, without compiling')
     parser_build.add_argument('--allow-differing-compile-commands', action='store_true',

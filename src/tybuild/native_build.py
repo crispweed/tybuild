@@ -1,26 +1,28 @@
 """
-`tybuild build`: building every project directly, compiling each shared source once.
+`tybuild build`: building projects directly, compiling each shared source once.
 
 Visual Studio builds, through `tybuild generate`, compile each project's full
 transitive source list separately. This builds the same projects with cl and link
 directly, knowing that projects share sources, so that each object is compiled
-once and linked into every project that needs it. Debug|x64 only.
+once and linked into every project that needs it. Debug|x64 (the default) or
+Release|x64, every project or only those named.
 
 Objects are identified by source *and* compile command set (see
 TypeTemplates.compile_command_id()), never by source alone, so that if project types'
 compile commands differ (which is an error unless allowed), a source reached from
 both is compiled once per type, correctly.
 
-Output goes under ./build_tybuild/Debug/, separate from ./build_template/Debug/
-where Visual Studio's builds put the executables, so that the two builds don't
-overwrite each other's executables, PDBs and incremental link state:
+Output goes under ./build_tybuild/<configuration>/, separate from
+./build_template/<configuration>/ where Visual Studio's builds put the executables, so
+that the two builds don't overwrite each other's executables, PDBs and incremental
+link state. Each configuration's directory is self-contained, cache included:
 
-    build_tybuild/Debug/
+    build_tybuild/<configuration>/
         .tybuild                            cache: command templates, compiler environment
         extract/<type>/                     where the command templates were extracted
         obj/<command id>/<src path>.obj     objects, by path under ./src
         obj/.../<src path>.obj.record.json  what the object was compiled from (see below)
-        bin/<Project>.exe, .pdb, .ilk       executables
+        bin/<Project>.exe, .pdb, .ilk       executables (.pdb, .ilk if the link makes them)
         link/<Project>.rsp, .lib            linker response files and import libraries
         link/<Project>.record.json          what the executable was linked from
 
@@ -54,7 +56,9 @@ from typing import Callable, Dict, Any, List, Optional, Set, Tuple
 
 from tybuild.build import EXCLUDED_PROJECT_TYPES, TOOLCHAIN_REFERENCE
 from tybuild.command_templates import (
-    CONFIGURATION,
+    CONFIGURATIONS,
+    DEFAULT_CONFIGURATION,
+    LINK_SUBSTITUTED_OUTPUTS,
     CommandProblem,
     TypeTemplates,
     compare_compile_commands,
@@ -181,15 +185,17 @@ def _print_templates(templates: Dict[str, TypeTemplates]) -> None:
     for project_type in sorted(templates):
         t = templates[project_type]
         compile_line = " ".join(" ".join(s) for s in t.effective_compile_switches())
+        outputs = " ".join(["/OUT:<EXE>"] + [f"/{o}:<{o}>" for o in _substituted_link_outputs(t)])
         print(f"Compile command, {project_type} (recorded source was {t.dummy_source}):")
         print(f"  cl {compile_line} /Fo<OBJECT> <SOURCE>")
         print(f"Link command, {project_type}:")
-        print(f"  link {' '.join(t.link_arguments)} /OUT:<EXE> /ILK:<ILK> /PDB:<PDB> /IMPLIB:<LIB> <OBJECTS>")
+        print(f"  link {' '.join(t.link_arguments)} {outputs} <OBJECTS>")
         print()
-    print("(Deliberate deviation from the recorded compile commands: /Zi is replaced by /Z7, and")
-    print(" /Fd dropped, so that each object carries its own debug information and parallel cl")
-    print(" processes don't share a PDB.)")
-    print()
+    if any(t.replaces_debug_info_format() for t in templates.values()):
+        print("(Deliberate deviation from the recorded compile commands: /Zi is replaced by /Z7, and")
+        print(" /Fd dropped, so that each object carries its own debug information and parallel cl")
+        print(" processes don't share a PDB.)")
+        print()
 
 
 # ---------------------- Environment ----------------------
@@ -359,6 +365,11 @@ def _link(job: _LinkJob, runner: _ProcessRunner) -> Tuple[bool, str]:
     return True, output
 
 
+def _substituted_link_outputs(template: TypeTemplates) -> List[str]:
+    """The output switches, other than /OUT, that the link command is given paths for."""
+    return [o for o in LINK_SUBSTITUTED_OUTPUTS if o in template.link_outputs]
+
+
 def _make_link_job(
     project: Project,
     template: TypeTemplates,
@@ -368,13 +379,16 @@ def _make_link_job(
     link_dir: Path,
 ) -> _LinkJob:
     exe = bin_dir / f"{project.name}.exe"
+    output_paths = {
+        "ILK": bin_dir / f"{project.name}.ilk",
+        "PDB": bin_dir / f"{project.name}.pdb",
+        "IMPLIB": link_dir / f"{project.name}.lib",
+    }
     arguments = list(template.link_arguments)
-    arguments += [
-        "/OUT:" + quote_argument(str(exe)),
-        "/ILK:" + quote_argument(str(bin_dir / f"{project.name}.ilk")),
-        "/PDB:" + quote_argument(str(bin_dir / f"{project.name}.pdb")),
-        "/IMPLIB:" + quote_argument(str(link_dir / f"{project.name}.lib")),
-    ]
+    arguments.append("/OUT:" + quote_argument(str(exe)))
+    # Only those the recorded command had, so that, for instance, a Release link with
+    # no incremental linking isn't given an .ilk
+    arguments += [f"/{o}:" + quote_argument(str(output_paths[o])) for o in _substituted_link_outputs(template)]
     arguments += [quote_argument(str(o)) for o in objects]
     # A response file, since the object list can exceed the command line length limit
     response_text = "\n".join(arguments) + "\n"
@@ -440,15 +454,49 @@ def _run_jobs(
 
 # ---------------------- Build ----------------------
 
+def _select_projects(all_projects: List[Project], names: Optional[List[str]]) -> List[Project]:
+    """
+    The projects to build: all of them, or those named, in discovery order.
+
+    Raises:
+        RuntimeError: If a name isn't a project that `tybuild build` builds
+    """
+    buildable = [p for p in all_projects if p.type not in EXCLUDED_PROJECT_TYPES]
+    if not names:
+        return buildable
+
+    by_name = {p.name: p for p in buildable}
+    unknown = sorted({n for n in names if n not in by_name})
+    if unknown:
+        excluded = {p.name: p.type for p in all_projects if p.type in EXCLUDED_PROJECT_TYPES}
+        lines = []
+        for name in unknown:
+            if name in excluded:
+                lines.append(f"'{name}' is a {excluded[name]} project, which `tybuild build` doesn't build")
+            else:
+                lines.append(f"No project named '{name}'")
+        available = ", ".join(sorted(by_name)) or "(none)"
+        raise RuntimeError("\n".join(lines) + f"\nProjects that can be built: {available}")
+
+    wanted = set(names)
+    return [p for p in buildable if p.name in wanted]
+
+
 def run_build(
     repo_root: Path,
     dry_run: bool,
     allow_differing_compile_commands: bool,
     refresh_commands: bool,
     jobs: Optional[int] = None,
+    configuration: str = DEFAULT_CONFIGURATION,
+    project_names: Optional[List[str]] = None,
 ) -> int:
     """
     Run `tybuild build`.
+
+    Command templates are got, and compile commands compared, for every project type,
+    and include errors reported for every source, even when only some projects are
+    built, so that a partial build fails wherever a full one would.
 
     Args:
         repo_root: Repository root (contains ./src and ./build_template)
@@ -456,6 +504,8 @@ def run_build(
         allow_differing_compile_commands: Build even if project types' compile commands differ
         refresh_commands: Re-extract the command templates regardless of the cache
         jobs: Number of parallel cl/link processes (default: processor count)
+        configuration: One of CONFIGURATIONS; output goes to ./build_tybuild/<configuration>/
+        project_names: Build only these projects, and the objects they need (default: all)
 
     Returns:
         Process exit code: 0 on success, 1 on errors that have been reported
@@ -464,6 +514,9 @@ def run_build(
         RuntimeError, FileNotFoundError: With a user-facing message
     """
     started = time.monotonic()
+    if configuration not in CONFIGURATIONS:
+        raise RuntimeError(f"Unknown configuration '{configuration}' "
+                           f"(tybuild build builds {', '.join(CONFIGURATIONS)})")
     repo_root = repo_root.resolve()
     src_root = repo_root / "src"
     template_dir = repo_root / "build_template"
@@ -480,12 +533,15 @@ def run_build(
         f"(from {TOOLCHAIN_REFERENCE})"
     )
 
-    projects = [p for p in discover_projects(repo_root) if p.type not in EXCLUDED_PROJECT_TYPES]
-    if not projects:
+    all_projects = discover_projects(repo_root)
+    if not any(p.type not in EXCLUDED_PROJECT_TYPES for p in all_projects):
         raise RuntimeError("No projects found in ./src/project/")
-    project_types = sorted({p.type for p in projects})
+    projects = _select_projects(all_projects, project_names)
+    # Every buildable type, not only the selected projects' (see above)
+    project_types = sorted({p.type for p in all_projects if p.type not in EXCLUDED_PROJECT_TYPES})
+    print(f"Configuration: {configuration}|x64")
 
-    config_dir = repo_root / BUILD_DIR_NAME / CONFIGURATION
+    config_dir = repo_root / BUILD_DIR_NAME / configuration
     config_dir.mkdir(parents=True, exist_ok=True)
     cache_path = config_dir / CACHE_FILENAME
     cache = _load_cache(cache_path)
@@ -513,6 +569,7 @@ def run_build(
         template_dir=template_dir,
         project_types=project_types,
         toolchain=toolchain,
+        configuration=configuration,
         extract_dir=config_dir / "extract",
         cached=cache.get("command_templates", {}),
         find_msbuild=find_msbuild,
@@ -578,7 +635,10 @@ def run_build(
             keys.append(key)
         project_objects[project.name] = keys
 
-    print(f"Projects: {len(projects)}, of {len(project_types)} type(s)")
+    if project_names:
+        print(f"Projects: {len(projects)} selected ({', '.join(p.name for p in projects)})")
+    else:
+        print(f"Projects: {len(projects)}, of {len(project_types)} type(s)")
     print(f"Compiles if each project compiled its own sources: {per_project_compiles}")
     print(f"Distinct sources: {len({key[0] for key in object_jobs})}")
     print(f"Distinct objects: {len(object_jobs)}, "

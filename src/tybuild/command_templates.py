@@ -13,8 +13,11 @@ What is built is a copy of the dummy in the tybuild build directory, with a stub
 source and without its project references and cmake check (see
 extract_type_templates()), and with IntDir and OutDir overridden to point there too.
 Paths that the cmake-generated project states absolutely (the linker's PDB and import
-library) still go to ./build_template/Debug/, but those belong to the dummy project,
-which nothing else builds into ./build/.
+library) still go to ./build_template/<configuration>/, but those belong to the dummy
+project, which nothing else builds into ./build/.
+
+The configuration (Debug or Release) is chosen per build; each configuration has its
+own build directory, so its own cache of these templates.
 
 Command lines are kept as raw tokens, with their quoting exactly as recorded, so
 that they are passed on to cl and link unchanged rather than unquoted and requoted.
@@ -42,7 +45,10 @@ from tybuild.vs_templates import (
     remove_project_references_in_vcxproj,
 )
 
-CONFIGURATION = "Debug"
+# The configurations `tybuild build` builds, as named in the cmake-generated templates.
+# The others cmake writes (MinSizeRel, RelWithDebInfo) have not been tried.
+CONFIGURATIONS = ("Debug", "Release")
+DEFAULT_CONFIGURATION = "Debug"
 PLATFORM = "x64"
 
 # The source the extraction copy of a dummy project compiles. It defines both entry
@@ -67,6 +73,11 @@ CL_PER_PROJECT_PREFIXES = ("Fo", "Fd")
 
 # link switches naming a per-project output (case-insensitive, as link's switches are)
 LINK_PER_PROJECT_PREFIXES = ("OUT:", "ILK:", "PDB:", "IMPLIB:", "MANIFESTFILE:", "PGD:")
+
+# Of those, the ones tybuild substitutes its own paths for, if the recorded command had
+# them (a Release link has no incremental link state, and may have no PDB). /OUT is
+# always given. The others are dropped.
+LINK_SUBSTITUTED_OUTPUTS = ("ILK", "PDB", "IMPLIB")
 
 # The one deliberate deviation from the extracted compile command. /Zi writes debug
 # information to a per-project PDB, which works for MSBuild because one cl process
@@ -165,21 +176,31 @@ class TypeTemplates:
 
     compile_switches holds each cl switch as a list of raw tokens: one token, or two
     for a switch with a separate argument ('/D', 'RTC_STATIC'). link_arguments holds
-    link's raw tokens, libraries included, objects excluded.
+    link's raw tokens, libraries included, objects excluded. link_outputs names the
+    per-project output switches the recorded link command had, upper-cased without
+    the colon ('OUT', 'PDB'), so that only those are given paths again.
     """
     template_identity: Dict[str, int]
     dummy_source: str
     compile_switches: List[List[str]]
     link_arguments: List[str]
+    link_outputs: List[str]
 
     @staticmethod
     def from_json(data: Dict[str, object]) -> "TypeTemplates":
+        # A cache entry from before link_outputs existed raises KeyError here, and is
+        # extracted again
         return TypeTemplates(
             template_identity=dict(data["template_identity"]),
             dummy_source=str(data["dummy_source"]),
             compile_switches=[list(s) for s in data["compile_switches"]],
             link_arguments=list(data["link_arguments"]),
+            link_outputs=list(data["link_outputs"]),
         )
+
+    def replaces_debug_info_format(self) -> bool:
+        """Whether DEBUG_INFO_REPLACEMENTS changes anything in this type's compile command."""
+        return any(len(s) == 1 and s[0] in DEBUG_INFO_REPLACEMENTS for s in self.compile_switches)
 
     def effective_compile_switches(self) -> List[List[str]]:
         """The compile switches as tybuild runs them, with DEBUG_INFO_REPLACEMENTS applied."""
@@ -305,19 +326,28 @@ def parse_compile_command(
 
 def parse_link_command(
     command: str, inputs: List[str], base_dir: Path, output_dirs: Sequence[Path]
-) -> List[str]:
+) -> Tuple[List[str], List[str]]:
     """
     Take the per-project parts out of a recorded link command line: the objects (those
     of the tlog entry's inputs that are .obj files) and the output paths.
 
-    Arguments are as for parse_compile_command(). Returns the remaining raw tokens.
+    Arguments are as for parse_compile_command().
+
+    Returns:
+        (the remaining raw tokens, the output switches removed, as in
+        TypeTemplates.link_outputs)
     """
     object_keys = {_path_key(p, base_dir) for p in inputs if p.lower().endswith(".obj")}
     arguments: List[str] = []
+    outputs: List[str] = []
     objects = 0
     for token in split_command_line(command):
         if _is_switch(token):
-            if token[1:].upper().startswith(LINK_PER_PROJECT_PREFIXES):
+            name = token[1:].upper()
+            if name.startswith(LINK_PER_PROJECT_PREFIXES):
+                output = name.split(":", 1)[0]
+                if output not in outputs:
+                    outputs.append(output)
                 continue
         elif _path_key(unquote_token(token), base_dir) in object_keys:
             objects += 1
@@ -336,7 +366,7 @@ def parse_link_command(
             f"substitute per project: {', '.join(leftovers)}\n"
             f"Command: {command}"
         )
-    return arguments
+    return arguments, outputs
 
 
 BUILD_EVENT_ELEMENTS = ("PreBuildEvent", "PreLinkEvent", "PostBuildEvent")
@@ -354,7 +384,9 @@ def _remove_build_events_in_vcxproj(xml_text: str) -> str:
     return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
 
 
-def extract_type_templates(template_vcxproj: Path, msbuild: Path, work_dir: Path) -> TypeTemplates:
+def extract_type_templates(
+    template_vcxproj: Path, msbuild: Path, work_dir: Path, configuration: str
+) -> TypeTemplates:
     """
     Build a copy of a ZZZZZZZZ_<type> dummy project with MSBuild and read back its commands.
 
@@ -367,14 +399,15 @@ def extract_type_templates(template_vcxproj: Path, msbuild: Path, work_dir: Path
       MSBuild evaluates the referenced ZERO_CHECK, with this build's IntDir.
     - Its CustomBuild steps (cmake's regeneration check) are removed.
     - Its build events are removed. The post-build event runs `vcpkg z-applocal` on
-      the executable at an absolute path in ./build_template/Debug/, which OutDir
-      doesn't change, so it fails on the copy.
+      the executable at an absolute path in ./build_template/<configuration>/, which
+      OutDir doesn't change, so it fails on the copy.
 
     Args:
         template_vcxproj: The dummy project, in ./build_template/
         msbuild: Path to MSBuild.exe
         work_dir: Directory for this extraction's files. Emptied first, so that the
             tlogs read are the ones this build wrote.
+        configuration: One of CONFIGURATIONS
 
     Raises:
         RuntimeError: If the build fails, or its commands aren't in the expected form
@@ -406,7 +439,7 @@ def extract_type_templates(template_vcxproj: Path, msbuild: Path, work_dir: Path
         str(msbuild), str(project_copy),
         "/nologo", "/verbosity:minimal", "/nodeReuse:false",
         "/t:Build",
-        f"/p:Configuration={CONFIGURATION}",
+        f"/p:Configuration={configuration}",
         f"/p:Platform={PLATFORM}",
         f"/p:IntDir={int_dir}\\",
         f"/p:OutDir={out_dir}\\",
@@ -429,13 +462,14 @@ def extract_type_templates(template_vcxproj: Path, msbuild: Path, work_dir: Path
     compile_switches, source = parse_compile_command(cl_command, cl_inputs, base_dir, output_dirs)
 
     link_inputs, link_command = _single_tlog_entry(int_dir, "link.command.", "link", template_vcxproj.name)
-    link_arguments = parse_link_command(link_command, link_inputs, base_dir, output_dirs)
+    link_arguments, link_outputs = parse_link_command(link_command, link_inputs, base_dir, output_dirs)
 
     return TypeTemplates(
         template_identity=identity,
         dummy_source=source,
         compile_switches=compile_switches,
         link_arguments=link_arguments,
+        link_outputs=link_outputs,
     )
 
 
@@ -443,6 +477,7 @@ def get_type_templates(
     template_dir: Path,
     project_types: Sequence[str],
     toolchain: Dict[str, str],
+    configuration: str,
     extract_dir: Path,
     cached: Dict[str, object],
     find_msbuild: Callable[[], Path],
@@ -458,6 +493,9 @@ def get_type_templates(
         template_dir: ./build_template/
         project_types: Types to get templates for
         toolchain: From read_toolchain_settings(); a change re-extracts everything
+        configuration: One of CONFIGURATIONS. Each has its own build directory and
+            cache, so this never changes for a given cache; a cache saying otherwise is
+            discarded anyway.
         extract_dir: Parent of the per-type extraction directories
         cached: The 'command_templates' part of the build cache, as last saved
         find_msbuild: Called at most once, and only if something needs extracting
@@ -466,10 +504,12 @@ def get_type_templates(
             so that a run killed part way keeps what it finished
         log: Progress output
     """
-    if cached.get("toolchain") != toolchain:
+    if cached.get("toolchain") != toolchain or cached.get("configuration", DEFAULT_CONFIGURATION) != configuration:
         cached = {}
     cached_types = dict(cached.get("types", {}))
-    new_cached: Dict[str, object] = {"toolchain": toolchain, "types": cached_types}
+    new_cached: Dict[str, object] = {
+        "toolchain": toolchain, "configuration": configuration, "types": cached_types,
+    }
 
     msbuild: Optional[Path] = None
     templates: Dict[str, TypeTemplates] = {}
@@ -504,7 +544,7 @@ def get_type_templates(
         log(f"  {project_type}: building {template_vcxproj.name} ({reason})")
         if msbuild is None:
             msbuild = find_msbuild()
-        extracted = extract_type_templates(template_vcxproj, msbuild, extract_dir / project_type)
+        extracted = extract_type_templates(template_vcxproj, msbuild, extract_dir / project_type, configuration)
         templates[project_type] = extracted
         cached_types[project_type] = asdict(extracted)
         save(new_cached)
