@@ -1,16 +1,31 @@
 {
-    "autoMemoryEnabled": false,
-    "permissions": {
-        "defaultMode": "default",
-        "allow": [
-            "Read",
-            "Grep",
-            "Glob",
-            "LS"
-        ],
-        "deny": [
-            "Bash",
-            "PowerShell"
-        ]
-    }
+  "autoMemoryEnabled": false,
+  "defaultShell": "powershell",
+  "permissions": {
+    "defaultMode": "auto",
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "LS",
+      "WebSearch",
+      "PowerShell(python -I ../agent-workflow/task_workflow.py sync)",
+      "PowerShell(python -I ../agent-workflow/task_workflow.py submit -m *)",
+      "PowerShell(Move-Item *)",
+      "PowerShell(Remove-Item *)",
+      "PowerShell(New-Item -ItemType Directory *)"
+    ],
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(~/.claude/.credentials.json)",
+      "Bash",
+      "PowerShell(git push *)",
+      "Artifact",
+      "RemoteTrigger",
+      "mcp__claude_ai_Claude_Docs",
+      "mcp__claude_ai_Gmail",
+      "mcp__claude_ai_Google_Calendar",
+      "mcp__claude_ai_Google_Drive"
+    ]
+  }
 }

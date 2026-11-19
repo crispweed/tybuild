@@ -1,4 +1,4 @@
-# CLAUDE.md - tybuild Project Guide
+# Project Guide
 
 ## Project Overview
 
