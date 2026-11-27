@@ -30,6 +30,13 @@ With the virtual environment active, you should also be able to import stuff fro
 
 When finished, the virtual environment can be deactivated with 'deactivate'.
 
+To have it active in every PowerShell terminal, add this to your PowerShell profile (`$PROFILE`),
+giving the path to this repo:
+
+```
+. C:\path\to\tybuild\venv\Scripts\Activate.ps1
+```
+
 ## Requirements
 
 This project is configured using `pyproject.toml` and uses modern Python packaging tools.
